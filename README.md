@@ -5,9 +5,9 @@ CiviCRM-to-UniFi-Access reconciliation service for door access control. Runs on 
 **Pre-implementation.** Architecture decided; no production code yet.
  
 ## Docs
- 
 
- 
+- [Architecture Reference](docs/architecture.md) — internal module layout, data contracts, pure/impure boundaries, coding conventions
+
 ## Dev setup
  
 Requires Python 3.11+ and [`uv`](https://docs.astral.sh/uv/).
