@@ -1,0 +1,35 @@
+name: CI
+ 
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+ 
+permissions:
+  contents: read
+ 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+ 
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+    - name: Set up uv
+      uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
+      with:
+        version: "0.11.15"
+        enable-cache: true
+    - name: Set up Python
+      run: uv python install
+    - name: Install dependencies
+      run: uv sync --locked --all-extras --dev
+    - name: Format check
+      run: uv run ruff check --output-format=github .
+    - name: Type check
+      run: uv run mypy src tests
+    - name: Test
+      run: uv run pytest
