@@ -57,3 +57,11 @@ quote-style = "double"
 indent-style = "space"
 line-ending = "lf"
 skip-magic-trailing-comma = false
+
+[tool.pyright]
+pythonVersion = "3.11"
+typeCheckingMode = "standard"
+include = ["src", "tests"]
+extraPaths = ["src"]
+venvPath = "."
+venv = ".venv"
