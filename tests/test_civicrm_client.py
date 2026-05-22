@@ -4,6 +4,7 @@ import json
 import urllib.parse
 from typing import Any
 
+import httpx
 import pytest
 from pytest_httpx import HTTPXMock
 
@@ -369,7 +370,6 @@ def test_network_error_retries_then_raises(
     httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Three httpx.RequestError responses → CivicrmClientError("network failure...")."""
-    import httpx
     sleep_calls: list[float] = []
     monkeypatch.setattr("time.sleep", lambda s: sleep_calls.append(s))
 
@@ -388,7 +388,6 @@ def test_network_error_then_success(
     httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """One network error then success → fetch_active succeeds."""
-    import httpx
     sleep_calls: list[float] = []
     monkeypatch.setattr("time.sleep", lambda s: sleep_calls.append(s))
 
@@ -428,3 +427,22 @@ def test_negative_retry_after_falls_back_to_backoff(
     assert len(result) == 1
     # All sleep values should be positive (no negative slept on)
     assert all(s > 0 for s in sleep_calls)
+
+
+def test_non_dict_json_response_returns_empty(httpx_mock: HTTPXMock) -> None:
+    """If CiviCRM returns a JSON array (or scalar) instead of a dict, treat as empty.
+
+    Defensive: a misbehaving server or proxy could return ["error"] or similar
+    rather than the expected {"values": [...]} envelope. _post returns [] in
+    that case, which translates to "no contacts" at the fetch_active level.
+    """
+    httpx_mock.add_response(
+        method="POST",
+        url="https://civi.example.org/wp-json/civicrm/v3/api4/Contact/get",
+        json=["unexpected error"],
+    )
+
+    with CivicrmClient(_config()) as client:
+        result = client.fetch_active()
+
+    assert result == []
