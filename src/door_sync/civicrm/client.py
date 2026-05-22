@@ -21,6 +21,7 @@ from door_sync.models import CiviMember
 _API_PATH = "/wp-json/civicrm/v3/api4"
 _PAGE_SIZE = 250
 _ACTIVE_STATUSES = ["Current", "Grace"]
+_MAX_PAGES = 1_000  # 250,000 records — far above any plausible deployment
 
 
 class CivicrmClientError(Exception):
@@ -72,7 +73,7 @@ class CivicrmClient:
     def _fetch_contacts(self) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
         offset = 0
-        while True:
+        for _ in range(_MAX_PAGES):
             page = self._post(
                 "Contact",
                 "get",
@@ -90,11 +91,14 @@ class CivicrmClient:
             if len(page) < _PAGE_SIZE:
                 return results
             offset += _PAGE_SIZE
+        raise CivicrmClientError(
+            f"Contact.get pagination exceeded {_MAX_PAGES} pages without terminating"
+        )
 
     def _fetch_memberships(self, contact_ids: list[int]) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
         offset = 0
-        while True:
+        for _ in range(_MAX_PAGES):
             page = self._post(
                 "Membership",
                 "get",
@@ -116,6 +120,9 @@ class CivicrmClient:
             if len(page) < _PAGE_SIZE:
                 return results
             offset += _PAGE_SIZE
+        raise CivicrmClientError(
+            f"Membership.get pagination exceeded {_MAX_PAGES} pages without terminating"
+        )
 
     def _post(
         self, entity: str, action: str, params: dict[str, Any]
