@@ -1,8 +1,13 @@
 """CiviCRM API4 client for door-sync.
 
-Reads active members (contacts with a non-empty card_id and an active
-membership) from a WordPress-hosted CiviCRM instance. Read-only — no write
-operations. Hand-rolled retry on 5xx and 429.
+Reads contacts with a non-empty card_id from a WordPress-hosted CiviCRM
+instance, augmented with their active (Current/Grace) membership type
+labels. Contacts with a card_id but no active membership are still returned
+with membership_types=[]; they resolve to "unmapped" downstream and the
+safety guard halts on them — surfacing the data issue rather than silently
+ignoring a provisioned card.
+
+Read-only — no write operations. Hand-rolled retry on 5xx and 429.
 
 This module is not pure (it does HTTP), but it does NOT call sys.exit.
 Errors surface as CivicrmClientError so the scheduler's per-cycle try/except
