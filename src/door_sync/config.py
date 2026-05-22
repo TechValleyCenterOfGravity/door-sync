@@ -30,6 +30,7 @@ EnvGetter = Callable[[str], "str | None"]
 class CivicrmConfig:
     host: str
     api_key: str
+    card_id_field: str
 
 
 @dataclass(frozen=True)
@@ -220,7 +221,18 @@ def _validate_civicrm(
                 message="required env var is missing or empty",
             )
         )
-    return CivicrmConfig(host=host, api_key=api_key)
+    card_id_field = section.get("card_id_field", "")
+    if not isinstance(card_id_field, str) or not card_id_field.strip():
+        issues.append(
+            ConfigIssue(
+                path="civicrm.card_id_field",
+                message="must be non-empty string",
+            )
+        )
+        card_id_field = ""
+    return CivicrmConfig(
+        host=host, api_key=api_key, card_id_field=card_id_field
+    )
 
 
 def _validate_unifi(

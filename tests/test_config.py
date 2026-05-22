@@ -16,7 +16,7 @@ from door_sync.models import SafetyThresholds, TierMapping
 
 
 def test_civicrm_config_is_frozen() -> None:
-    c = CivicrmConfig(host="https://x", api_key="k")
+    c = CivicrmConfig(host="https://x", api_key="k", card_id_field="G.f")
     with pytest.raises(FrozenInstanceError):
         c.host = "https://y"  # type: ignore[misc]
 
@@ -30,7 +30,7 @@ def test_unifi_config_is_frozen() -> None:
 def test_config_is_frozen() -> None:
     c = Config(
         cadence_seconds=600,
-        civicrm=CivicrmConfig(host="https://x", api_key="k"),
+        civicrm=CivicrmConfig(host="https://x", api_key="k", card_id_field="G.f"),
         unifi=UnifiConfig(host="https://y", api_key="k", tls_fingerprint="AB" * 32),
         safety=SafetyThresholds(),
         tier_mapping=TierMapping(rules={}),
@@ -169,7 +169,7 @@ def test_explicit_paths_override_defaults(
     env = tmp_path / "custom-env"
     cfg.write_text(
         'cadence_seconds = 600\n'
-        '[civicrm]\nhost = "https://c"\n'
+        '[civicrm]\nhost = "https://c"\ncard_id_field = "G.f"\n'
         '[unifi]\nhost = "https://u"\n'
         'tls_fingerprint = "' + "AB" * 32 + '"\n'
     )
@@ -183,7 +183,7 @@ def test_env_var_dir_supplies_defaults(
 ) -> None:
     (tmp_path / "config.toml").write_text(
         'cadence_seconds = 600\n'
-        '[civicrm]\nhost = "https://c"\n'
+        '[civicrm]\nhost = "https://c"\ncard_id_field = "G.f"\n'
         '[unifi]\nhost = "https://u"\n'
         'tls_fingerprint = "' + "AB" * 32 + '"\n'
     )
@@ -215,6 +215,7 @@ def _write_minimal_valid(tmp_path: Path) -> tuple[Path, Path]:
         "cadence_seconds = 600\n"
         "[civicrm]\n"
         'host = "https://civi.example.org"\n'
+        'card_id_field = "Door_Access.card_id"\n'
         "[unifi]\n"
         'host = "https://unifi.example.org"\n'
         'tls_fingerprint = "' + ("AB:" * 31 + "AB") + '"\n'
@@ -238,6 +239,7 @@ def test_load_happy_path_returns_populated_config(
     assert result.cadence_seconds == 600
     assert result.civicrm.host == "https://civi.example.org"
     assert result.civicrm.api_key == "civikey"
+    assert result.civicrm.card_id_field == "Door_Access.card_id"
     assert result.unifi.host == "https://unifi.example.org"
     assert result.unifi.api_key == "unifikey"
     assert result.unifi.tls_fingerprint == "AB:" * 31 + "AB"
@@ -446,6 +448,22 @@ def test_baseline_floor_validation_rejects_negative(
     assert any(i.path == "safety.baseline_floor" for i in exc.value.issues)
 
 
+def test_civicrm_missing_card_id_field_is_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """card_id_field is required; missing or empty fails validation."""
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(tmp_path)
+    cfg.write_text(
+        cfg.read_text().replace('card_id_field = "Door_Access.card_id"\n', "")
+    )
+    with pytest.raises(ConfigError) as exc:
+        load(config_path=cfg, env_path=env)
+    assert any(
+        i.path == "civicrm.card_id_field" for i in exc.value.issues
+    )
+
+
 def test_tier_rule_tier_requires_target_policy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -640,6 +658,7 @@ def test_example_files_parse(monkeypatch: pytest.MonkeyPatch) -> None:
     # civicrm
     assert result.civicrm.host == "https://civicrm.example.org"
     assert result.civicrm.api_key == "replace-me"
+    assert result.civicrm.card_id_field == "Door_Access.card_id"
     # unifi
     assert result.unifi.host == "https://unifi.example.org:12445"
     assert result.unifi.api_key == "replace-me"
