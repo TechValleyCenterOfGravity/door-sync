@@ -148,3 +148,10 @@ def test_env_file_unclosed_single_quote_raises(tmp_path: Path) -> None:
     p.write_text("KEY=hello'\n")
     with pytest.raises(ValueError, match="line 1"):
         _load_env_file(p)
+
+
+def test_env_file_trailing_orphan_quote_raises(tmp_path: Path) -> None:
+    p = tmp_path / "env"
+    p.write_text('KEY=value"\n')
+    with pytest.raises(ValueError, match="unmatched quote"):
+        _load_env_file(p)

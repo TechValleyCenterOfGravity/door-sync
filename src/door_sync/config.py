@@ -66,7 +66,7 @@ def _load_env_file(path: Path) -> dict[str, str]:
     if not path.exists():
         return {}
     result: dict[str, str] = {}
-    for line_no, raw_line in enumerate(path.read_text().splitlines(), start=1):
+    for line_no, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
@@ -85,6 +85,6 @@ def _load_env_file(path: Path) -> dict[str, str]:
         ):
             value = value[1:-1]
         elif value and (value[0] in ('"', "'") or value[-1] in ('"', "'")):
-            raise ValueError(f"line {line_no}: unclosed quote: {raw_line!r}")
+            raise ValueError(f"line {line_no}: unmatched quote: {raw_line!r}")
         result[key] = value
     return result
