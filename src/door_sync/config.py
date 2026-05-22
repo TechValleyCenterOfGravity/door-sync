@@ -221,8 +221,8 @@ def _validate_civicrm(
                 message="required env var is missing or empty",
             )
         )
-    card_id_field = section.get("card_id_field", "")
-    if not isinstance(card_id_field, str) or not card_id_field.strip():
+    card_id_field_raw = section.get("card_id_field", "")
+    if not isinstance(card_id_field_raw, str):
         issues.append(
             ConfigIssue(
                 path="civicrm.card_id_field",
@@ -230,6 +230,23 @@ def _validate_civicrm(
             )
         )
         card_id_field = ""
+    else:
+        card_id_field = card_id_field_raw.strip()
+        if not card_id_field:
+            issues.append(
+                ConfigIssue(
+                    path="civicrm.card_id_field",
+                    message="must be non-empty string",
+                )
+            )
+        elif any(c.isspace() for c in card_id_field):
+            issues.append(
+                ConfigIssue(
+                    path="civicrm.card_id_field",
+                    message="must not contain internal whitespace",
+                )
+            )
+            card_id_field = ""
     return CivicrmConfig(
         host=host, api_key=api_key, card_id_field=card_id_field
     )

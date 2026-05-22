@@ -451,7 +451,7 @@ def test_baseline_floor_validation_rejects_negative(
 def test_civicrm_missing_card_id_field_is_reported(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """card_id_field is required; missing or empty fails validation."""
+    """card_id_field key absent from TOML → ConfigError."""
     monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
     cfg, env = _write_minimal_valid(tmp_path)
     cfg.write_text(
@@ -462,6 +462,52 @@ def test_civicrm_missing_card_id_field_is_reported(
     assert any(
         i.path == "civicrm.card_id_field" for i in exc.value.issues
     )
+
+
+@pytest.mark.parametrize(
+    "bad_value",
+    [
+        '""',                          # empty string
+        '"   "',                       # whitespace-only
+        '"Door Access.card_id"',       # internal space
+        '"Door_Access\\t.card_id"',    # internal tab
+    ],
+)
+def test_civicrm_card_id_field_rejects_bad_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    bad_value: str,
+) -> None:
+    """card_id_field must be non-empty and contain no internal whitespace."""
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(tmp_path)
+    cfg.write_text(
+        cfg.read_text().replace(
+            '"Door_Access.card_id"',
+            bad_value,
+        )
+    )
+    with pytest.raises(ConfigError) as exc:
+        load(config_path=cfg, env_path=env)
+    assert any(
+        i.path == "civicrm.card_id_field" for i in exc.value.issues
+    )
+
+
+def test_civicrm_card_id_field_strips_whitespace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Leading/trailing whitespace is stripped before storage."""
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(tmp_path)
+    cfg.write_text(
+        cfg.read_text().replace(
+            '"Door_Access.card_id"',
+            '"  Door_Access.card_id  "',
+        )
+    )
+    result = load(config_path=cfg, env_path=env)
+    assert result.civicrm.card_id_field == "Door_Access.card_id"
 
 
 def test_tier_rule_tier_requires_target_policy(
