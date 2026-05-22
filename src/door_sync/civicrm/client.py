@@ -28,6 +28,7 @@ from door_sync.models import CiviMember
 
 _API_PATH = "/wp-json/civicrm/v3/api4"
 _PAGE_SIZE = 250
+_CONTACT_BATCH_SIZE = 500  # Caps contact_ids per Membership.get IN clause to keep request body bounded
 _ACTIVE_STATUSES = ["Current", "Grace"]
 _MAX_PAGES = 1_000  # 250,000 records — far above any plausible deployment
 _MAX_ATTEMPTS = 3
@@ -105,6 +106,17 @@ class CivicrmClient:
         )
 
     def _fetch_memberships(self, contact_ids: list[int]) -> list[dict[str, Any]]:
+        if not contact_ids:
+            return []
+        results: list[dict[str, Any]] = []
+        for start in range(0, len(contact_ids), _CONTACT_BATCH_SIZE):
+            batch = contact_ids[start : start + _CONTACT_BATCH_SIZE]
+            results.extend(self._fetch_memberships_for_batch(batch))
+        return results
+
+    def _fetch_memberships_for_batch(
+        self, batch_ids: list[int]
+    ) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
         offset = 0
         for _ in range(_MAX_PAGES):
@@ -118,7 +130,7 @@ class CivicrmClient:
                         "status_id:name",
                     ],
                     "where": [
-                        ["contact_id", "IN", contact_ids],
+                        ["contact_id", "IN", batch_ids],
                         ["status_id:name", "IN", _ACTIVE_STATUSES],
                     ],
                     "limit": _PAGE_SIZE,

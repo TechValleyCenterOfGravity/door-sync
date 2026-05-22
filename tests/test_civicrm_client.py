@@ -265,6 +265,79 @@ def test_fetch_active_paginates_memberships(httpx_mock: HTTPXMock) -> None:
     assert len(result[0].membership_types) == 251
 
 
+def test_fetch_active_batches_membership_contact_ids(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """contact_ids are chunked into batches of _CONTACT_BATCH_SIZE per Membership.get call.
+
+    Prevents an unbounded contact_id IN clause body for deployments with many contacts.
+    """
+    # 501 contacts → 3 Contact.get pages (250 + 250 + 1), then 2 Membership.get batches (500 + 1)
+    httpx_mock.add_response(
+        method="POST",
+        url="https://civi.example.org/wp-json/civicrm/v3/api4/Contact/get",
+        json=_values_response([_contact(i) for i in range(1, 251)]),
+    )
+    httpx_mock.add_response(
+        method="POST",
+        url="https://civi.example.org/wp-json/civicrm/v3/api4/Contact/get",
+        json=_values_response([_contact(i) for i in range(251, 501)]),
+    )
+    httpx_mock.add_response(
+        method="POST",
+        url="https://civi.example.org/wp-json/civicrm/v3/api4/Contact/get",
+        json=_values_response([_contact(501)]),
+    )
+
+    # Each batch returns no memberships (short page → no within-batch pagination)
+    _register_memberships(httpx_mock, [])
+    _register_memberships(httpx_mock, [])
+
+    with CivicrmClient(_config()) as client:
+        result = client.fetch_active()
+
+    assert len(result) == 501
+    assert all(m.membership_types == [] for m in result)
+
+    # Verify two Membership.get calls were made with disjoint contact_id batches
+    membership_requests = [
+        r for r in httpx_mock.get_requests()
+        if "/Membership/get" in str(r.url)
+    ]
+    assert len(membership_requests) == 2
+
+    all_batch_ids: list[int] = []
+    for r in membership_requests:
+        params = json.loads(
+            urllib.parse.parse_qs(r.content.decode())["params"][0]
+        )
+        # where = [["contact_id", "IN", [...]], ["status_id:name", "IN", [...]]]
+        contact_id_clause = next(
+            w for w in params["where"] if w[0] == "contact_id"
+        )
+        all_batch_ids.extend(contact_id_clause[2])
+
+    # Each contact_id appears exactly once across all batches, covering all 501
+    assert sorted(all_batch_ids) == list(range(1, 502))
+
+
+def test_fetch_memberships_skipped_when_no_contact_ids(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Defensive: empty contact_ids → no Membership.get call.
+
+    fetch_active already short-circuits on empty contacts, but _fetch_memberships
+    is now reachable for empty input via direct call, so guard it too.
+    """
+    _register_contacts(httpx_mock, [])
+    # No membership response registered — pytest-httpx would error if one were made
+
+    with CivicrmClient(_config()) as client:
+        result = client.fetch_active()
+
+    assert result == []
+
+
 # --- Retries and error paths ---
 
 
