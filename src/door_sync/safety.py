@@ -14,7 +14,9 @@ def check(
             reason=f"unmapped types: {len(diff.unmapped)} member(s) could not be mapped to a tier rule",
         )
 
-    # Collect card_ids from diff entries that will write to UniFi.
+    # Collect card_ids from diff entries that will actually write a card_id to UniFi.
+    # to_update_policy is excluded: it only writes the policy field, never the card_id,
+    # so it can't introduce duplicate or invalid card_ids.
     write_card_ids: list[int] = []
     for r in diff.to_add:
         if r.card_id is not None:
@@ -29,7 +31,7 @@ def check(
         if cid in seen:
             return CheckResult(
                 halted=True,
-                reason=f"duplicate card ID {cid} appears in multiple diff entries",
+                reason=f"duplicate card ID ending in {cid % 10000:04d} appears in multiple diff entries",
             )
         seen.add(cid)
 
@@ -38,7 +40,7 @@ def check(
         if cid < 0 or cid > 65535:
             return CheckResult(
                 halted=True,
-                reason=f"invalid card ID {cid}: must be in range 0..65535",
+                reason="invalid card ID: value outside allowed range 0..65535",
             )
 
     # Guards 4–6: mass guards, skipped when baseline is too small for percentages to be meaningful.

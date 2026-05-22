@@ -44,13 +44,13 @@ def _empty_diff() -> Diff:
     )
 
 
-def _high_baseline() -> int:
-    # Comfortably above default floor (10)
-    return 100
+# A baseline well above SafetyThresholds.baseline_floor (10) so mass-guard tests
+# never accidentally exercise the floor-skip code path.
+_HIGH_BASELINE = 100
 
 
 def test_clean_diff_not_halted() -> None:
-    result = check(_empty_diff(), baseline=_high_baseline(), thresholds=SafetyThresholds())
+    result = check(_empty_diff(), baseline=_HIGH_BASELINE, thresholds=SafetyThresholds())
     assert result.halted is False
     assert result.reason is None
 
@@ -66,7 +66,7 @@ def test_unmapped_non_empty_halts() -> None:
         to_deactivate=[],
         unmapped=[_r(resolution="unmapped", target_policy=None)],
     )
-    result = check(diff, baseline=_high_baseline(), thresholds=SafetyThresholds())
+    result = check(diff, baseline=_HIGH_BASELINE, thresholds=SafetyThresholds())
     assert result.halted is True
     assert result.reason is not None
     assert "unmapped" in result.reason.lower()
@@ -83,7 +83,7 @@ def test_duplicate_card_in_to_add_halts() -> None:
         to_deactivate=[],
         unmapped=[],
     )
-    result = check(diff, baseline=_high_baseline(), thresholds=SafetyThresholds())
+    result = check(diff, baseline=_HIGH_BASELINE, thresholds=SafetyThresholds())
     assert result.halted is True
     assert result.reason is not None
     assert "duplicate" in result.reason.lower()
@@ -97,7 +97,7 @@ def test_duplicate_card_across_add_and_update_credential_halts() -> None:
         to_deactivate=[],
         unmapped=[],
     )
-    result = check(diff, baseline=_high_baseline(), thresholds=SafetyThresholds())
+    result = check(diff, baseline=_HIGH_BASELINE, thresholds=SafetyThresholds())
     assert result.halted is True
     assert "duplicate" in (result.reason or "").lower()
 
@@ -110,7 +110,7 @@ def test_none_card_ids_dont_count_as_duplicates() -> None:
         to_deactivate=[],
         unmapped=[],
     )
-    result = check(diff, baseline=_high_baseline(), thresholds=SafetyThresholds())
+    result = check(diff, baseline=_HIGH_BASELINE, thresholds=SafetyThresholds())
     assert result.halted is False
 
 
@@ -125,7 +125,7 @@ def test_negative_card_id_halts() -> None:
         to_deactivate=[],
         unmapped=[],
     )
-    result = check(diff, baseline=_high_baseline(), thresholds=SafetyThresholds())
+    result = check(diff, baseline=_HIGH_BASELINE, thresholds=SafetyThresholds())
     assert result.halted is True
     assert "invalid" in (result.reason or "").lower()
 
@@ -138,7 +138,7 @@ def test_card_id_above_65535_halts() -> None:
         to_deactivate=[],
         unmapped=[],
     )
-    result = check(diff, baseline=_high_baseline(), thresholds=SafetyThresholds())
+    result = check(diff, baseline=_HIGH_BASELINE, thresholds=SafetyThresholds())
     assert result.halted is True
     assert "invalid" in (result.reason or "").lower()
 
@@ -151,7 +151,7 @@ def test_card_id_at_boundary_0_and_65535_is_valid() -> None:
         to_deactivate=[],
         unmapped=[],
     )
-    result = check(diff, baseline=_high_baseline(), thresholds=SafetyThresholds())
+    result = check(diff, baseline=_HIGH_BASELINE, thresholds=SafetyThresholds())
     assert result.halted is False
 
 
