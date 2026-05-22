@@ -1,5 +1,6 @@
 {
     "mypy-type-checker.interpreter": [
         ".venv/bin/python"
-    ]
+    ],
+    "mypy-type-checker.importStrategy": "fromEnvironment"
 }
