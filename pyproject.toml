@@ -31,3 +31,29 @@ strict = true
 files = ["src", "tests"]
 mypy_path = ["src"]
 explicit_package_bases = true
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # import sorting
+    "UP",  # pyupgrade
+    "B",   # bugbear
+]
+ignore = [
+    "E501", # line length handled by formatter/readability tradeoffs
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["door_sync"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+skip-magic-trailing-comma = false
