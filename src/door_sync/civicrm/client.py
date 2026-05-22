@@ -56,15 +56,18 @@ class CivicrmClient:
             label = str(m["membership_type_id:label"])
             types_by_contact.setdefault(cid, []).append(label)
 
-        return [
-            CiviMember(
-                contact_id=int(c["id"]),
-                display_name=str(c["display_name"]),
-                card_id=_coerce_card_id(c.get(self._config.card_id_field)),
-                membership_types=types_by_contact.get(int(c["id"]), []),
+        result: list[CiviMember] = []
+        for c in contacts:
+            cid = int(c["id"])
+            result.append(
+                CiviMember(
+                    contact_id=cid,
+                    display_name=str(c["display_name"]),
+                    card_id=_coerce_card_id(c.get(self._config.card_id_field)),
+                    membership_types=types_by_contact.get(cid, []),
+                )
             )
-            for c in contacts
-        ]
+        return result
 
     def _fetch_contacts(self) -> list[dict[str, Any]]:
         return self._post(
@@ -105,6 +108,8 @@ class CivicrmClient:
         data = {"params": json.dumps(params)}
         response = self._http.post(url, data=data)
         payload = response.json()
+        if not isinstance(payload, dict):
+            return []
         values = payload.get("values", [])
         if not isinstance(values, list):
             return []
