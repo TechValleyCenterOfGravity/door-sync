@@ -498,6 +498,23 @@ def test_tier_rule_invalid_resolution(
     )
 
 
+def test_tier_rule_invalid_rank(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rank must be an int. Strings, bools, and missing values are all rejected."""
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(tmp_path)
+    cfg.write_text(
+        cfg.read_text()
+        + '[tier_mapping.rules.Bad]\nresolution = "none"\nrank = "oops"\n'
+    )
+    with pytest.raises(ConfigError) as exc:
+        load(config_path=cfg, env_path=env)
+    assert any(
+        i.path == "tier_mapping.rules.Bad.rank" for i in exc.value.issues
+    )
+
+
 def test_tier_mapping_empty_rules_is_valid(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

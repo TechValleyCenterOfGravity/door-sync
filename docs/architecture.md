@@ -94,7 +94,7 @@ door-sync/
 
 | Module | Owns | Depends on |
 |---|---|---|
-| `config` | Loading and validating env + TOML into a frozen `Config` | stdlib only |
+| `config` | Loading and validating env + TOML into a frozen `Config` | stdlib, `models` |
 | `models` | All domain dataclasses (`CiviMember`, `ResolvedMember`, `UnifiUser`, `Diff`, …) | stdlib only |
 | `tier_mapping` | Resolving a `CiviMember` into a `ResolvedMember` given the mapping | `models` |
 | `civicrm.client` | Reading active members from CiviCRM API4 | `models`, `httpx` |
@@ -384,7 +384,6 @@ These decisions are intentionally deferred. When implementing them, update this 
 
 | Topic | Where it'll land | Notes |
 |---|---|---|
-| Config schema (TOML structure, env vars, validation rules) | `config.py` + new §13 here | Decide before writing any client |
 | CiviCRM client API surface (method signatures) | `civicrm/client.py` + new §14 here | Determined by API4 query needs |
 | UniFi client API surface (method signatures) | `unifi/client.py` + new §15 here | Constrained by UniFi Access API capabilities |
 | Audit log entry schema | `audit.py` + new §16 here | JSON line per record; fields TBD |
