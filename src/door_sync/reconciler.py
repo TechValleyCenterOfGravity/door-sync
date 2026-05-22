@@ -21,8 +21,8 @@ def compute_diff(
 
         if r is None:
             # Contact only in UniFi: deactivate if currently active.
-            assert u is not None  # all_ids construction guarantees this
-            if u.active:
+            # u cannot be None here — all_ids is the union of both dicts.
+            if u is not None and u.active:
                 to_deactivate.append(u)
             continue
 
