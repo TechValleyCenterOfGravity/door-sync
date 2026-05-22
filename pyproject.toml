@@ -24,3 +24,10 @@ dev = [
     "pytest>=9.0.3",
     "ruff>=0.15.13",
 ]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src", "tests"]
+mypy_path = ["src"]
+explicit_package_bases = true
