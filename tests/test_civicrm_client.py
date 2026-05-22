@@ -186,3 +186,78 @@ def test_request_uses_bearer_auth_and_form_body(httpx_mock: HTTPXMock) -> None:
     params = json.loads(parsed["params"][0])
     assert "select" in params
     assert params["select"] == ["id", "display_name", "Door_Access.card_id"]
+
+
+# --- Pagination ---
+
+
+def test_fetch_active_paginates_contacts(httpx_mock: HTTPXMock) -> None:
+    """251 contacts arrive as a full page of 250 then a short page of 1."""
+    full_page = [_contact(i) for i in range(1, 251)]
+    short_page = [_contact(251)]
+
+    httpx_mock.add_response(
+        method="POST",
+        url="https://civi.example.org/wp-json/civicrm/v3/api4/Contact/get",
+        json=_values_response(full_page),
+    )
+    httpx_mock.add_response(
+        method="POST",
+        url="https://civi.example.org/wp-json/civicrm/v3/api4/Contact/get",
+        json=_values_response(short_page),
+    )
+    # All 251 contacts have Gold/Current memberships, returned across two pages
+    httpx_mock.add_response(
+        method="POST",
+        url="https://civi.example.org/wp-json/civicrm/v3/api4/Membership/get",
+        json=_values_response([_membership(i, "Gold", "Current") for i in range(1, 251)]),
+    )
+    httpx_mock.add_response(
+        method="POST",
+        url="https://civi.example.org/wp-json/civicrm/v3/api4/Membership/get",
+        json=_values_response([_membership(251, "Gold", "Current")]),
+    )
+
+    with CivicrmClient(_config()) as client:
+        result = client.fetch_active()
+
+    assert len(result) == 251
+    assert {m.contact_id for m in result} == set(range(1, 252))
+
+    # Confirm two Contact.get requests were made with offset=0 and offset=250
+    contact_requests = [
+        r for r in httpx_mock.get_requests()
+        if "/Contact/get" in str(r.url)
+    ]
+    assert len(contact_requests) == 2
+    offsets = sorted(
+        json.loads(
+            urllib.parse.parse_qs(r.content.decode())["params"][0]
+        ).get("offset", 0)
+        for r in contact_requests
+    )
+    assert offsets == [0, 250]
+
+
+def test_fetch_active_paginates_memberships(httpx_mock: HTTPXMock) -> None:
+    """251 memberships across 2 pages."""
+    _register_contacts(httpx_mock, [_contact(1)])
+
+    full_page = [_membership(1, f"Type{i}", "Current") for i in range(250)]
+    short_page = [_membership(1, "Type250", "Current")]
+    httpx_mock.add_response(
+        method="POST",
+        url="https://civi.example.org/wp-json/civicrm/v3/api4/Membership/get",
+        json=_values_response(full_page),
+    )
+    httpx_mock.add_response(
+        method="POST",
+        url="https://civi.example.org/wp-json/civicrm/v3/api4/Membership/get",
+        json=_values_response(short_page),
+    )
+
+    with CivicrmClient(_config()) as client:
+        result = client.fetch_active()
+
+    assert len(result) == 1
+    assert len(result[0].membership_types) == 251

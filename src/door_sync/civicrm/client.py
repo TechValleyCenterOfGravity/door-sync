@@ -70,36 +70,52 @@ class CivicrmClient:
         return result
 
     def _fetch_contacts(self) -> list[dict[str, Any]]:
-        return self._post(
-            "Contact",
-            "get",
-            {
-                "select": ["id", "display_name", self._config.card_id_field],
-                "where": [
-                    [self._config.card_id_field, "IS NOT EMPTY"],
-                    ["is_deleted", "=", False],
-                ],
-                "limit": _PAGE_SIZE,
-            },
-        )
+        results: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            page = self._post(
+                "Contact",
+                "get",
+                {
+                    "select": ["id", "display_name", self._config.card_id_field],
+                    "where": [
+                        [self._config.card_id_field, "IS NOT EMPTY"],
+                        ["is_deleted", "=", False],
+                    ],
+                    "limit": _PAGE_SIZE,
+                    "offset": offset,
+                },
+            )
+            results.extend(page)
+            if len(page) < _PAGE_SIZE:
+                return results
+            offset += _PAGE_SIZE
 
     def _fetch_memberships(self, contact_ids: list[int]) -> list[dict[str, Any]]:
-        return self._post(
-            "Membership",
-            "get",
-            {
-                "select": [
-                    "contact_id",
-                    "membership_type_id:label",
-                    "status_id:name",
-                ],
-                "where": [
-                    ["contact_id", "IN", contact_ids],
-                    ["status_id:name", "IN", _ACTIVE_STATUSES],
-                ],
-                "limit": _PAGE_SIZE,
-            },
-        )
+        results: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            page = self._post(
+                "Membership",
+                "get",
+                {
+                    "select": [
+                        "contact_id",
+                        "membership_type_id:label",
+                        "status_id:name",
+                    ],
+                    "where": [
+                        ["contact_id", "IN", contact_ids],
+                        ["status_id:name", "IN", _ACTIVE_STATUSES],
+                    ],
+                    "limit": _PAGE_SIZE,
+                    "offset": offset,
+                },
+            )
+            results.extend(page)
+            if len(page) < _PAGE_SIZE:
+                return results
+            offset += _PAGE_SIZE
 
     def _post(
         self, entity: str, action: str, params: dict[str, Any]
