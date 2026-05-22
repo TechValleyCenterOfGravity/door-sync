@@ -599,3 +599,26 @@ def test_malformed_env_file_surfaces_as_config_error(
     with pytest.raises(ConfigError) as exc:
         load(config_path=cfg, env_path=env)
     assert any(i.path == "env_file" for i in exc.value.issues)
+
+
+# --- example file drift test ---
+
+
+def test_example_files_parse(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Loading the committed example files catches drift between docs and validators."""
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("CIVICRM_API_KEY", raising=False)
+    monkeypatch.delenv("UNIFI_API_KEY", raising=False)
+    repo_root = Path(__file__).parent.parent
+    result = load(
+        config_path=repo_root / "config.example.toml",
+        env_path=repo_root / ".env.example",
+    )
+    # The example uses stub values; assert just the shape.
+    assert result.civicrm.api_key == "replace-me"
+    assert result.unifi.api_key == "replace-me"
+    assert result.cadence_seconds == 600
+    assert "Gold" in result.tier_mapping.rules
+    assert result.tier_mapping.rules["Gold"].resolution == "tier"
+    assert "Comp" in result.tier_mapping.rules
+    assert result.tier_mapping.rules["Comp"].target_policy is None

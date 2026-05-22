@@ -33,9 +33,10 @@ Dry-run is safe to point at production data.
  
 Two files:
  
-- **Env file** for secrets (API keys, TLS cert fingerprint). Dev: `.env`. Prod: `/etc/door-sync/env`, mode `0400`.
-- **TOML file** for everything else (tier mapping, thresholds, cadence). Dev: `config.toml`. Prod: `/etc/door-sync/config.toml`.
-Config schema in progress.
+- **Env file** for secrets (API keys only). Dev: `.env`. Prod: `/etc/door-sync/env`, mode `0400`.
+- **TOML file** for everything else (host URLs, TLS fingerprint, tier mapping, thresholds, cadence). Dev: `config.toml`. Prod: `/etc/door-sync/config.toml`.
+
+See `config.example.toml` and `.env.example` for the full schema. Copy them and fill in real values.
  
 ## Project layout
  

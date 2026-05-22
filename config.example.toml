@@ -1,0 +1,47 @@
+# door-sync configuration — non-secret settings.
+# Copy this file to `config.toml` (dev) or `/etc/door-sync/config.toml` (prod) and edit.
+# Secrets (API keys) live in the env file instead — see `.env.example`.
+
+# Polling cadence in seconds. Minimum 60.
+cadence_seconds = 600
+
+[civicrm]
+# Base URL for the CiviCRM site (must start with https://).
+host = "https://civicrm.example.org"
+
+[unifi]
+# Base URL for the UniFi Access controller (must start with https://).
+host = "https://unifi.example.org:12445"
+# SHA-256 fingerprint of the controller's TLS certificate.
+# 64 hex chars or 32 colon-separated bytes. Generate with:
+#   openssl s_client -connect host:port < /dev/null 2>/dev/null \
+#     | openssl x509 -fingerprint -sha256 -noout
+tls_fingerprint = "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89"
+
+[safety]
+# These match the defaults baked into SafetyThresholds; tune per deployment.
+mass_deactivate_pct = 0.15
+mass_add_pct = 0.25
+mass_policy_pct = 0.20
+baseline_floor = 10
+
+# One [tier_mapping.rules.<TypeName>] table per CiviCRM Membership Type.
+# Resolution kinds:
+#   "tier"     — assign credential + UniFi policy (target_policy required)
+#   "none"     — intentionally no door access (deactivate if present)
+#   "day-pass" — skip entirely; day pass flow handles per-visit (Appendix C)
+# rank: highest wins when a contact holds multiple types.
+# Use quoted keys for type names containing spaces or punctuation.
+
+[tier_mapping.rules.Gold]
+resolution = "tier"
+target_policy = "policy-id-from-unifi"
+rank = 100
+
+[tier_mapping.rules.Comp]
+resolution = "none"
+rank = 50
+
+[tier_mapping.rules."Day Pass"]
+resolution = "day-pass"
+rank = 10
