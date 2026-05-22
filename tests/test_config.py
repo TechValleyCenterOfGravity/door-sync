@@ -605,7 +605,11 @@ def test_malformed_env_file_surfaces_as_config_error(
 
 
 def test_example_files_parse(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Loading the committed example files catches drift between docs and validators."""
+    """Loading the committed example files catches drift between docs and validators.
+
+    Asserts every field the validators populate, so a schema change in any
+    section breaks this test if the example files aren't updated in lockstep.
+    """
     monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
     monkeypatch.delenv("CIVICRM_API_KEY", raising=False)
     monkeypatch.delenv("UNIFI_API_KEY", raising=False)
@@ -614,11 +618,30 @@ def test_example_files_parse(monkeypatch: pytest.MonkeyPatch) -> None:
         config_path=repo_root / "config.example.toml",
         env_path=repo_root / ".env.example",
     )
-    # The example uses stub values; assert just the shape.
-    assert result.civicrm.api_key == "replace-me"
-    assert result.unifi.api_key == "replace-me"
+    # Top-level
     assert result.cadence_seconds == 600
+    # civicrm
+    assert result.civicrm.host == "https://civicrm.example.org"
+    assert result.civicrm.api_key == "replace-me"
+    # unifi
+    assert result.unifi.host == "https://unifi.example.org:12445"
+    assert result.unifi.api_key == "replace-me"
+    assert result.unifi.tls_fingerprint.startswith("AB:CD:EF:")
+    # safety (verifies _validate_safety builds the dataclass with example values)
+    assert isinstance(result.safety, SafetyThresholds)
+    assert result.safety.mass_deactivate_pct == 0.15
+    assert result.safety.mass_add_pct == 0.25
+    assert result.safety.mass_policy_pct == 0.20
+    assert result.safety.baseline_floor == 10
+    # tier_mapping — all three rules from the example
     assert "Gold" in result.tier_mapping.rules
     assert result.tier_mapping.rules["Gold"].resolution == "tier"
+    assert result.tier_mapping.rules["Gold"].target_policy == "policy-id-from-unifi"
+    assert result.tier_mapping.rules["Gold"].rank == 100
     assert "Comp" in result.tier_mapping.rules
+    assert result.tier_mapping.rules["Comp"].resolution == "none"
     assert result.tier_mapping.rules["Comp"].target_policy is None
+    # The "Day Pass" quoted-key rule — most likely to break on parser changes
+    assert "Day Pass" in result.tier_mapping.rules
+    assert result.tier_mapping.rules["Day Pass"].resolution == "day-pass"
+    assert result.tier_mapping.rules["Day Pass"].target_policy is None
