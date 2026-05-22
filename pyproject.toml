@@ -15,7 +15,7 @@ dependencies = [
 door-sync = "door_sync.__main__:main"
 
 [build-system]
-requires = ["uv_build>=0.11.15,<0.12.0"]
+requires = ["uv_build>=0.11.16,<0.12.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
@@ -23,7 +23,7 @@ dev = [
     "mypy>=2.1.0",
     "pytest>=9.0.3",
     "pytest-httpx>=0.30",
-    "ruff>=0.15.13",
+    "ruff>=0.15.14",
 ]
 
 [tool.mypy]
