@@ -252,7 +252,11 @@ def test_idempotency_canary() -> None:
     ]
 
     first = compute_diff(resolved, unifi)
-    assert first.to_add  # sanity: this isn't a vacuous test
+    # Sanity: every diff bucket the canary is supposed to exercise must be non-empty.
+    # If a future edit to the fixture drops one, the canary would silently stop testing that path.
+    assert first.to_add
+    assert first.to_update_credential
+    assert first.to_update_policy
     assert first.to_deactivate
 
     new_unifi = apply_diff_in_memory(first, unifi)

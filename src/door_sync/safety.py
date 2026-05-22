@@ -44,7 +44,8 @@ def check(
             )
 
     # Guards 4–6: mass guards, skipped when baseline is too small for percentages to be meaningful.
-    if baseline >= thresholds.baseline_floor:
+    # The `baseline > 0` clause is defensive: a configured floor of 0 would otherwise allow division by zero.
+    if baseline > 0 and baseline >= thresholds.baseline_floor:
         # Guard 4: mass deactivation
         if len(diff.to_deactivate) / baseline > thresholds.mass_deactivate_pct:
             pct = len(diff.to_deactivate) / baseline * 100
