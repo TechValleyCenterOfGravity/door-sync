@@ -561,6 +561,23 @@ def test_falls_back_to_os_environ_when_file_lacks_key(
     assert result.unifi.api_key == "from_environ"
 
 
+def test_empty_env_file_value_does_not_fall_through_to_os_environ(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty value in the .env file is treated as 'intentionally empty', not 'missing'.
+
+    File wins per spec §7. A developer who writes `KEY=` in .env to suppress a
+    shell variable expects that to work — the env var should NOT leak through.
+    """
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(tmp_path)
+    env.write_text("CIVICRM_API_KEY=\nUNIFI_API_KEY=unifikey\n")
+    monkeypatch.setenv("CIVICRM_API_KEY", "from_environ")
+    with pytest.raises(ConfigError) as exc:
+        load(config_path=cfg, env_path=env)
+    assert any(i.path == "CIVICRM_API_KEY" for i in exc.value.issues)
+
+
 def test_missing_required_env_var_is_reported(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -144,7 +144,11 @@ def load(
         issues.append(ConfigIssue(path="env_file", message=str(e)))
 
     def env_get(name: str) -> str | None:
-        return file_env.get(name) or os.environ.get(name)
+        # File wins if the key is present at all (even if empty),
+        # per spec §7. Only fall through to os.environ when the file
+        # genuinely lacks the key.
+        val = file_env.get(name)
+        return val if val is not None else os.environ.get(name)
 
     cadence = _validate_cadence(data, issues)
     civicrm = _validate_civicrm(data, issues, env_get)
@@ -207,6 +211,7 @@ def _validate_civicrm(
                 message=f"must start with https://, got {host!r}",
             )
         )
+        host = ""
     api_key = (env_get("CIVICRM_API_KEY") or "").strip()
     if not api_key:
         issues.append(
@@ -240,12 +245,16 @@ def _validate_unifi(
                 message=f"must start with https://, got {host!r}",
             )
         )
+        host = ""
     fingerprint = section.get("tls_fingerprint", "")
     if not isinstance(fingerprint, str) or not _FINGERPRINT_RE.match(fingerprint):
         issues.append(
             ConfigIssue(
                 path="unifi.tls_fingerprint",
-                message="must be SHA-256 hex (64 chars or 32 colon-separated bytes)",
+                message=(
+                    f"must be SHA-256 hex (64 chars or 32 colon-separated bytes), "
+                    f"got {fingerprint!r}"
+                ),
             )
         )
         fingerprint = ""
