@@ -4,9 +4,10 @@ import json
 import urllib.parse
 from typing import Any
 
+import pytest
 from pytest_httpx import HTTPXMock
 
-from door_sync.civicrm.client import CivicrmClient
+from door_sync.civicrm.client import CivicrmClient, CivicrmClientError
 from door_sync.config import CivicrmConfig
 
 
@@ -261,3 +262,104 @@ def test_fetch_active_paginates_memberships(httpx_mock: HTTPXMock) -> None:
 
     assert len(result) == 1
     assert len(result[0].membership_types) == 251
+
+
+# --- Retries and error paths ---
+
+
+def test_http_401_raises_no_retry(httpx_mock: HTTPXMock) -> None:
+    """401 is a permanent auth error — no retry, raise CivicrmClientError."""
+    httpx_mock.add_response(
+        method="POST",
+        url="https://civi.example.org/wp-json/civicrm/v3/api4/Contact/get",
+        status_code=401,
+        text="Unauthorized",
+    )
+
+    with CivicrmClient(_config()) as client:
+        with pytest.raises(CivicrmClientError, match="401"):
+            client.fetch_active()
+
+    assert len(httpx_mock.get_requests()) == 1  # No retries
+
+
+def test_http_500_retries_then_raises(
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Three 500 responses → raise CivicrmClientError; three requests made."""
+    sleep_calls: list[float] = []
+    monkeypatch.setattr("time.sleep", lambda s: sleep_calls.append(s))
+
+    for _ in range(3):
+        httpx_mock.add_response(
+            method="POST",
+            url="https://civi.example.org/wp-json/civicrm/v3/api4/Contact/get",
+            status_code=500,
+            text="Internal Server Error",
+        )
+
+    with CivicrmClient(_config()) as client:
+        with pytest.raises(CivicrmClientError, match="500"):
+            client.fetch_active()
+
+    assert len(httpx_mock.get_requests()) == 3
+    assert len(sleep_calls) == 2  # Sleep between attempts, not after the last
+
+
+def test_http_500_then_200_succeeds(
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """500 then 200 → success after one retry."""
+    sleep_calls: list[float] = []
+    monkeypatch.setattr("time.sleep", lambda s: sleep_calls.append(s))
+
+    httpx_mock.add_response(
+        method="POST",
+        url="https://civi.example.org/wp-json/civicrm/v3/api4/Contact/get",
+        status_code=500,
+    )
+    _register_contacts(httpx_mock, [_contact(42)])
+    _register_memberships(httpx_mock, [_membership(42)])
+
+    with CivicrmClient(_config()) as client:
+        result = client.fetch_active()
+
+    assert len(result) == 1
+    assert len(sleep_calls) == 1
+
+
+def test_http_429_honors_retry_after_seconds(
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """429 with Retry-After: 5 → client waits at least 5s before retrying."""
+    sleep_calls: list[float] = []
+    monkeypatch.setattr("time.sleep", lambda s: sleep_calls.append(s))
+
+    httpx_mock.add_response(
+        method="POST",
+        url="https://civi.example.org/wp-json/civicrm/v3/api4/Contact/get",
+        status_code=429,
+        headers={"Retry-After": "5"},
+    )
+    _register_contacts(httpx_mock, [_contact(42)])
+    _register_memberships(httpx_mock, [_membership(42)])
+
+    with CivicrmClient(_config()) as client:
+        result = client.fetch_active()
+
+    assert len(result) == 1
+    assert any(s >= 5 for s in sleep_calls), f"Expected a sleep >= 5s, got {sleep_calls}"
+
+
+def test_malformed_json_raises(httpx_mock: HTTPXMock) -> None:
+    """200 with invalid JSON body → CivicrmClientError."""
+    httpx_mock.add_response(
+        method="POST",
+        url="https://civi.example.org/wp-json/civicrm/v3/api4/Contact/get",
+        status_code=200,
+        text="not valid json {",
+    )
+
+    with CivicrmClient(_config()) as client:
+        with pytest.raises(CivicrmClientError, match="malformed"):
+            client.fetch_active()

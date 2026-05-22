@@ -10,6 +10,9 @@ can log and continue.
 """
 
 import json
+import random
+import time
+from collections.abc import Callable
 from types import TracebackType
 from typing import Any
 
@@ -22,6 +25,7 @@ _API_PATH = "/wp-json/civicrm/v3/api4"
 _PAGE_SIZE = 250
 _ACTIVE_STATUSES = ["Current", "Grace"]
 _MAX_PAGES = 1_000  # 250,000 records — far above any plausible deployment
+_MAX_ATTEMPTS = 3
 
 
 class CivicrmClientError(Exception):
@@ -129,14 +133,62 @@ class CivicrmClient:
     ) -> list[dict[str, Any]]:
         url = f"{_API_PATH}/{entity}/{action}"
         data = {"params": json.dumps(params)}
-        response = self._http.post(url, data=data)
-        payload = response.json()
+        response = self._with_retries(lambda: self._http.post(url, data=data))
+        try:
+            payload = response.json()
+        except (json.JSONDecodeError, ValueError) as e:
+            raise CivicrmClientError(
+                f"malformed JSON response from {url}: {e}"
+            ) from e
         if not isinstance(payload, dict):
             return []
         values = payload.get("values", [])
         if not isinstance(values, list):
             return []
         return values
+
+    def _with_retries(
+        self, action: Callable[[], httpx.Response]
+    ) -> httpx.Response:
+        for attempt in range(1, _MAX_ATTEMPTS + 1):
+            try:
+                response = action()
+            except httpx.RequestError as e:
+                if attempt == _MAX_ATTEMPTS:
+                    raise CivicrmClientError(
+                        f"network failure after {_MAX_ATTEMPTS} attempts: {e}"
+                    ) from e
+                time.sleep(_backoff_seconds(attempt))
+                continue
+
+            if response.status_code == 429:
+                if attempt == _MAX_ATTEMPTS:
+                    raise CivicrmClientError(
+                        f"HTTP 429 (rate limited) after {_MAX_ATTEMPTS} attempts"
+                    )
+                wait = _parse_retry_after(response) or _backoff_seconds(attempt)
+                time.sleep(wait)
+                continue
+
+            if 500 <= response.status_code < 600:
+                if attempt == _MAX_ATTEMPTS:
+                    raise CivicrmClientError(
+                        f"HTTP {response.status_code} after {_MAX_ATTEMPTS} attempts: "
+                        f"{response.text[:200]}"
+                    )
+                time.sleep(_backoff_seconds(attempt))
+                continue
+
+            if response.status_code >= 400:
+                # 4xx other than 429 → permanent, no retry
+                raise CivicrmClientError(
+                    f"HTTP {response.status_code}: {response.text[:200]}"
+                )
+
+            return response
+
+        # Unreachable (mypy/typing only); the loop always returns or raises.
+        raise CivicrmClientError("retry loop exited unexpectedly")
 
     def close(self) -> None:
         self._http.close()
@@ -163,3 +215,24 @@ def _coerce_card_id(raw: object) -> int | None:
     if raw is None or raw == "":
         return None
     return int(raw)  # type: ignore[call-overload, no-any-return]
+
+
+def _backoff_seconds(attempt: int) -> float:
+    """Exponential backoff with ±20% jitter. attempt is 1-indexed."""
+    base = float(2 ** (attempt - 1))  # 1.0, 2.0, 4.0 ...
+    jitter = random.uniform(-0.2, 0.2) * base
+    return max(0.1, base + jitter)
+
+
+def _parse_retry_after(response: httpx.Response) -> float | None:
+    """Parse a Retry-After header. Returns the seconds value if it's a number.
+
+    HTTP-date form is not supported (per spec §13) and returns None.
+    """
+    value = response.headers.get("Retry-After")
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
