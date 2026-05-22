@@ -70,11 +70,20 @@ class CivicrmClient:
         result: list[CiviMember] = []
         for c in contacts:
             cid = int(c["id"])
+            raw_card_id = c.get(self._config.card_id_field)
+            try:
+                card_id = _coerce_card_id(raw_card_id)
+            except (ValueError, TypeError) as e:
+                raise CivicrmClientError(
+                    f"contact {cid}: card_id field "
+                    f"{self._config.card_id_field!r} has unparseable value "
+                    f"{raw_card_id!r}: {e}"
+                ) from e
             result.append(
                 CiviMember(
                     contact_id=cid,
                     display_name=str(c["display_name"]),
-                    card_id=_coerce_card_id(c.get(self._config.card_id_field)),
+                    card_id=card_id,
                     membership_types=types_by_contact.get(cid, []),
                 )
             )
@@ -226,8 +235,11 @@ class CivicrmClient:
 def _coerce_card_id(raw: object) -> int | None:
     """CiviCRM may return card_id as int or string depending on the field type.
 
-    Empty string and None map to None; everything else is parsed as int.
-    Caller has already filtered contacts to non-empty card_id, so the None
+    Empty string and None map to None; numeric strings and ints parse via int().
+    Callers must catch ValueError/TypeError and surface them with contact context;
+    bubbling raw int() errors is the wrong layer to diagnose data issues.
+
+    The caller has already filtered contacts to non-empty card_id, so the None
     path is defensive only.
     """
     if raw is None or raw == "":

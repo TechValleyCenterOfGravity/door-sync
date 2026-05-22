@@ -519,3 +519,27 @@ def test_non_dict_json_response_returns_empty(httpx_mock: HTTPXMock) -> None:
         result = client.fetch_active()
 
     assert result == []
+
+
+def test_unparseable_card_id_raises_with_contact_context(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """A non-numeric card_id value raises CivicrmClientError, not bare ValueError.
+
+    The message must include the contact_id and the offending field/value so
+    an operator can find the bad CiviCRM record.
+    """
+    _register_contacts(
+        httpx_mock,
+        [_contact(contact_id=42, card_id="not-a-number")],
+    )
+    _register_memberships(httpx_mock, [])
+
+    with CivicrmClient(_config()) as client:
+        with pytest.raises(CivicrmClientError) as exc:
+            client.fetch_active()
+
+    msg = str(exc.value)
+    assert "42" in msg                       # contact_id surfaced
+    assert "not-a-number" in msg             # bad value surfaced
+    assert "Door_Access.card_id" in msg      # field name surfaced
