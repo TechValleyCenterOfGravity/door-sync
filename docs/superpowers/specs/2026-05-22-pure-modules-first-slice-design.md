@@ -50,7 +50,7 @@ Plus:
 
 Contains every frozen dataclass from architecture §6, plus three new ones this slice introduces.
 
-**Verbatim from architecture §6** (no changes):
+**From architecture §6**, with one revision noted below:
 
 - `CiviMember(contact_id, display_name, card_id, membership_types)`
 - `ResolvedMember(contact_id, display_name, card_id, target_policy, resolution)`
@@ -58,6 +58,8 @@ Contains every frozen dataclass from architecture §6, plus three new ones this 
 - `Diff(to_add, to_update_credential, to_update_policy, to_deactivate, unmapped)`
 - `CheckResult(halted, reason)`
 - `ReconcileResult(halted, reason, diff)`
+
+**Revision to architecture §6:** `Diff.unmapped` changes from `list[CiviMember]` to `list[ResolvedMember]`. Architecture §6 originally typed it as `list[CiviMember]`, but architecture §8's truth table requires the reconciler to populate it — and `reconciler.compute_diff(resolved, unifi)` only sees `ResolvedMember`s. `ResolvedMember` retains `contact_id`, `display_name`, and `card_id`, which is enough to identify the contact in audit/alert output. The `membership_types` info is lost in this transition; if a future audit/alert slice needs it back, the cleanest fix is to add an optional field to `ResolvedMember`. The architecture doc has been updated in the same commit as this spec revision.
 
 **New in this slice** (architecture §6 leaves the mapping/thresholds shape implicit; defining them here lets `tier_mapping` and `safety` take single, typed arguments):
 

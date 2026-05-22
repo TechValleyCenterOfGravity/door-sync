@@ -172,7 +172,7 @@ class Diff:
     to_update_credential: list[tuple[ResolvedMember, UnifiUser]]
     to_update_policy: list[tuple[ResolvedMember, UnifiUser]]
     to_deactivate: list[UnifiUser]
-    unmapped: list[CiviMember]      # populated only when tier mapping has gaps
+    unmapped: list[ResolvedMember]  # populated only when tier mapping has gaps
 
 @dataclass(frozen=True)
 class CheckResult:
