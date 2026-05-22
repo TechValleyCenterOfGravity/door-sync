@@ -363,3 +363,68 @@ def test_malformed_json_raises(httpx_mock: HTTPXMock) -> None:
     with CivicrmClient(_config()) as client:
         with pytest.raises(CivicrmClientError, match="malformed"):
             client.fetch_active()
+
+
+def test_network_error_retries_then_raises(
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Three httpx.RequestError responses → CivicrmClientError("network failure...")."""
+    import httpx
+    sleep_calls: list[float] = []
+    monkeypatch.setattr("time.sleep", lambda s: sleep_calls.append(s))
+
+    for _ in range(3):
+        httpx_mock.add_exception(httpx.ConnectError("connection refused"))
+
+    with CivicrmClient(_config()) as client:
+        with pytest.raises(CivicrmClientError, match="network failure"):
+            client.fetch_active()
+
+    assert len(httpx_mock.get_requests()) == 3
+    assert len(sleep_calls) == 2  # Sleep between attempts
+
+
+def test_network_error_then_success(
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One network error then success → fetch_active succeeds."""
+    import httpx
+    sleep_calls: list[float] = []
+    monkeypatch.setattr("time.sleep", lambda s: sleep_calls.append(s))
+
+    httpx_mock.add_exception(httpx.ConnectError("transient blip"))
+    _register_contacts(httpx_mock, [_contact(42)])
+    _register_memberships(httpx_mock, [_membership(42)])
+
+    with CivicrmClient(_config()) as client:
+        result = client.fetch_active()
+
+    assert len(result) == 1
+    assert len(sleep_calls) == 1
+
+
+def test_negative_retry_after_falls_back_to_backoff(
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A server returning Retry-After: -1 must NOT cause time.sleep to raise.
+
+    Negative values fall back to exponential backoff instead.
+    """
+    sleep_calls: list[float] = []
+    monkeypatch.setattr("time.sleep", lambda s: sleep_calls.append(s))
+
+    httpx_mock.add_response(
+        method="POST",
+        url="https://civi.example.org/wp-json/civicrm/v3/api4/Contact/get",
+        status_code=429,
+        headers={"Retry-After": "-1"},
+    )
+    _register_contacts(httpx_mock, [_contact(42)])
+    _register_memberships(httpx_mock, [_membership(42)])
+
+    with CivicrmClient(_config()) as client:
+        result = client.fetch_active()
+
+    assert len(result) == 1
+    # All sleep values should be positive (no negative slept on)
+    assert all(s > 0 for s in sleep_calls)

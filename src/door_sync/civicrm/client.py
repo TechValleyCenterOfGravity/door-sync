@@ -164,7 +164,8 @@ class CivicrmClient:
             if response.status_code == 429:
                 if attempt == _MAX_ATTEMPTS:
                     raise CivicrmClientError(
-                        f"HTTP 429 (rate limited) after {_MAX_ATTEMPTS} attempts"
+                        f"HTTP 429 (rate limited) after {_MAX_ATTEMPTS} attempts: "
+                        f"{response.text[:200]}"
                     )
                 wait = _parse_retry_after(response) or _backoff_seconds(attempt)
                 time.sleep(wait)
@@ -225,14 +226,17 @@ def _backoff_seconds(attempt: int) -> float:
 
 
 def _parse_retry_after(response: httpx.Response) -> float | None:
-    """Parse a Retry-After header. Returns the seconds value if it's a number.
+    """Parse a Retry-After header. Returns positive seconds value if numeric.
 
     HTTP-date form is not supported (per spec §13) and returns None.
+    Negative and zero values return None so the caller falls back to backoff;
+    negatives would otherwise cause time.sleep to raise ValueError.
     """
     value = response.headers.get("Retry-After")
     if value is None:
         return None
     try:
-        return float(value)
+        result = float(value)
     except ValueError:
         return None
+    return result if result > 0 else None
