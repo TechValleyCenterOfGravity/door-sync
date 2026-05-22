@@ -10,6 +10,7 @@ from door_sync.config import (
     ConfigIssue,
     UnifiConfig,
     _load_env_file,
+    load,
 )
 from door_sync.models import SafetyThresholds, TierMapping
 
@@ -155,3 +156,429 @@ def test_env_file_trailing_orphan_quote_raises(tmp_path: Path) -> None:
     p.write_text('KEY=value"\n')
     with pytest.raises(ValueError, match="unmatched quote"):
         _load_env_file(p)
+
+
+# --- path resolution tests ---
+
+
+def test_explicit_paths_override_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg = tmp_path / "custom.toml"
+    env = tmp_path / "custom-env"
+    cfg.write_text(
+        'cadence_seconds = 600\n'
+        '[civicrm]\nhost = "https://c"\n'
+        '[unifi]\nhost = "https://u"\n'
+        'tls_fingerprint = "' + "AB" * 32 + '"\n'
+    )
+    env.write_text("CIVICRM_API_KEY=x\nUNIFI_API_KEY=y\n")
+    result = load(config_path=cfg, env_path=env)
+    assert result.civicrm.host == "https://c"
+
+
+def test_env_var_dir_supplies_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "config.toml").write_text(
+        'cadence_seconds = 600\n'
+        '[civicrm]\nhost = "https://c"\n'
+        '[unifi]\nhost = "https://u"\n'
+        'tls_fingerprint = "' + "AB" * 32 + '"\n'
+    )
+    (tmp_path / "env").write_text("CIVICRM_API_KEY=x\nUNIFI_API_KEY=y\n")
+    monkeypatch.setenv("DOOR_SYNC_CONFIG_DIR", str(tmp_path))
+    result = load()
+    assert result.civicrm.host == "https://c"
+
+
+def test_missing_toml_file_raises_config_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("CIVICRM_API_KEY", raising=False)
+    monkeypatch.delenv("UNIFI_API_KEY", raising=False)
+    with pytest.raises(ConfigError) as exc:
+        load(config_path=tmp_path / "missing.toml", env_path=tmp_path / "missing-env")
+    paths = [i.path for i in exc.value.issues]
+    assert "config_file" in paths
+
+
+# --- validator tests ---
+
+
+def _write_minimal_valid(tmp_path: Path) -> tuple[Path, Path]:
+    cfg = tmp_path / "config.toml"
+    env = tmp_path / "env"
+    cfg.write_text(
+        "cadence_seconds = 600\n"
+        "[civicrm]\n"
+        'host = "https://civi.example.org"\n'
+        "[unifi]\n"
+        'host = "https://unifi.example.org"\n'
+        'tls_fingerprint = "' + ("AB:" * 31 + "AB") + '"\n'
+    )
+    env.write_text("CIVICRM_API_KEY=civikey\nUNIFI_API_KEY=unifikey\n")
+    return cfg, env
+
+
+def test_load_happy_path_returns_populated_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(tmp_path)
+    cfg.write_text(
+        cfg.read_text()
+        + "[safety]\nmass_deactivate_pct = 0.10\n"
+        + '[tier_mapping.rules.Gold]\n'
+        + 'resolution = "tier"\ntarget_policy = "P_GOLD"\nrank = 100\n'
+    )
+    result = load(config_path=cfg, env_path=env)
+    assert result.cadence_seconds == 600
+    assert result.civicrm.host == "https://civi.example.org"
+    assert result.civicrm.api_key == "civikey"
+    assert result.unifi.host == "https://unifi.example.org"
+    assert result.unifi.api_key == "unifikey"
+    assert result.unifi.tls_fingerprint == "AB:" * 31 + "AB"
+    assert result.safety.mass_deactivate_pct == 0.10
+    assert result.safety.mass_add_pct == 0.25  # default
+    assert "Gold" in result.tier_mapping.rules
+    assert result.tier_mapping.rules["Gold"].resolution == "tier"
+    assert result.tier_mapping.rules["Gold"].target_policy == "P_GOLD"
+    assert result.tier_mapping.rules["Gold"].rank == 100
+
+
+@pytest.mark.parametrize(
+    "cadence_value, expected_ok",
+    [
+        (60, True),
+        (600, True),
+        (59, False),
+        (0, False),
+        (-1, False),
+        ('"not-an-int"', False),  # TOML string
+    ],
+)
+def test_cadence_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cadence_value: object,
+    expected_ok: bool,
+) -> None:
+    """Each value is rendered into TOML as-is. Strings must be pre-quoted by the caller."""
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(tmp_path)
+    cfg_text = cfg.read_text().replace(
+        "cadence_seconds = 600", f"cadence_seconds = {cadence_value}"
+    )
+    cfg.write_text(cfg_text)
+    if expected_ok:
+        result = load(config_path=cfg, env_path=env)
+        assert result.cadence_seconds == cadence_value
+    else:
+        with pytest.raises(ConfigError) as exc:
+            load(config_path=cfg, env_path=env)
+        assert any(i.path == "cadence_seconds" for i in exc.value.issues)
+
+
+def test_cadence_rejects_boolean_true(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TOML 'true' parses to Python True (a bool), which our validator rejects as not-an-int."""
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(tmp_path)
+    cfg.write_text(
+        cfg.read_text().replace("cadence_seconds = 600", "cadence_seconds = true")
+    )
+    with pytest.raises(ConfigError) as exc:
+        load(config_path=cfg, env_path=env)
+    assert any(i.path == "cadence_seconds" for i in exc.value.issues)
+
+
+def test_cadence_default_when_omitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(tmp_path)
+    cfg.write_text(cfg.read_text().replace("cadence_seconds = 600\n", ""))
+    result = load(config_path=cfg, env_path=env)
+    assert result.cadence_seconds == 600
+
+
+@pytest.mark.parametrize(
+    "host, expected_ok",
+    [
+        ("https://example.org", True),
+        ("https://example.org:8080", True),
+        ("http://example.org", False),
+        ("example.org", False),
+        ("", False),
+    ],
+)
+def test_civicrm_host_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    host: str,
+    expected_ok: bool,
+) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(tmp_path)
+    cfg.write_text(cfg.read_text().replace("https://civi.example.org", host))
+    if expected_ok:
+        result = load(config_path=cfg, env_path=env)
+        assert result.civicrm.host == host
+    else:
+        with pytest.raises(ConfigError) as exc:
+            load(config_path=cfg, env_path=env)
+        assert any(i.path == "civicrm.host" for i in exc.value.issues)
+
+
+@pytest.mark.parametrize(
+    "host, expected_ok",
+    [
+        ("https://example.org:12445", True),
+        ("http://example.org", False),
+        ("", False),
+    ],
+)
+def test_unifi_host_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    host: str,
+    expected_ok: bool,
+) -> None:
+    """Mirror of civicrm.host validation; the two validators are separate functions."""
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(tmp_path)
+    cfg.write_text(cfg.read_text().replace("https://unifi.example.org", host))
+    if expected_ok:
+        result = load(config_path=cfg, env_path=env)
+        assert result.unifi.host == host
+    else:
+        with pytest.raises(ConfigError) as exc:
+            load(config_path=cfg, env_path=env)
+        assert any(i.path == "unifi.host" for i in exc.value.issues)
+
+
+@pytest.mark.parametrize(
+    "fingerprint, expected_ok",
+    [
+        ("AB" * 32, True),                          # 64 hex chars
+        ("ab" * 32, True),                          # lowercase
+        ("AB:" * 31 + "AB", True),                  # colon-separated
+        ("AB" * 31, False),                         # 62 chars — too short
+        ("XYZ" + "AB" * 31, False),                 # non-hex
+        ("", False),
+    ],
+)
+def test_tls_fingerprint_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fingerprint: str,
+    expected_ok: bool,
+) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(tmp_path)
+    cfg.write_text(cfg.read_text().replace("AB:" * 31 + "AB", fingerprint))
+    if expected_ok:
+        result = load(config_path=cfg, env_path=env)
+        assert result.unifi.tls_fingerprint == fingerprint
+    else:
+        with pytest.raises(ConfigError) as exc:
+            load(config_path=cfg, env_path=env)
+        assert any(i.path == "unifi.tls_fingerprint" for i in exc.value.issues)
+
+
+@pytest.mark.parametrize(
+    "pct_value, expected_ok",
+    [
+        ("0.01", True),
+        ("0.5", True),
+        ("1.0", True),
+        ("0.0", False),
+        ("-0.1", False),
+        ("1.01", False),
+        ('"oops"', False),  # TOML string
+    ],
+)
+def test_safety_pct_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    pct_value: str,
+    expected_ok: bool,
+) -> None:
+    """Each value is rendered into TOML as-is. Strings must be pre-quoted."""
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(tmp_path)
+    cfg.write_text(
+        cfg.read_text() + f"[safety]\nmass_deactivate_pct = {pct_value}\n"
+    )
+    if expected_ok:
+        result = load(config_path=cfg, env_path=env)
+        assert result.safety.mass_deactivate_pct == float(pct_value)
+    else:
+        with pytest.raises(ConfigError) as exc:
+            load(config_path=cfg, env_path=env)
+        assert any(
+            i.path == "safety.mass_deactivate_pct" for i in exc.value.issues
+        )
+
+
+def test_baseline_floor_validation_passes_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(tmp_path)
+    cfg.write_text(cfg.read_text() + "[safety]\nbaseline_floor = 0\n")
+    result = load(config_path=cfg, env_path=env)
+    assert result.safety.baseline_floor == 0
+
+
+def test_baseline_floor_validation_rejects_negative(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(tmp_path)
+    cfg.write_text(cfg.read_text() + "[safety]\nbaseline_floor = -1\n")
+    with pytest.raises(ConfigError) as exc:
+        load(config_path=cfg, env_path=env)
+    assert any(i.path == "safety.baseline_floor" for i in exc.value.issues)
+
+
+def test_tier_rule_tier_requires_target_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(tmp_path)
+    cfg.write_text(
+        cfg.read_text()
+        + '[tier_mapping.rules.Gold]\nresolution = "tier"\nrank = 1\n'
+    )
+    with pytest.raises(ConfigError) as exc:
+        load(config_path=cfg, env_path=env)
+    assert any(
+        i.path == "tier_mapping.rules.Gold.target_policy"
+        for i in exc.value.issues
+    )
+
+
+def test_tier_rule_non_tier_forbids_target_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(tmp_path)
+    cfg.write_text(
+        cfg.read_text()
+        + '[tier_mapping.rules.Comp]\n'
+        + 'resolution = "none"\ntarget_policy = "P_SHOULD_NOT_BE_HERE"\nrank = 1\n'
+    )
+    with pytest.raises(ConfigError) as exc:
+        load(config_path=cfg, env_path=env)
+    assert any(
+        i.path == "tier_mapping.rules.Comp.target_policy"
+        for i in exc.value.issues
+    )
+
+
+def test_tier_rule_invalid_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(tmp_path)
+    cfg.write_text(
+        cfg.read_text()
+        + '[tier_mapping.rules.Weird]\nresolution = "xyz"\nrank = 1\n'
+    )
+    with pytest.raises(ConfigError) as exc:
+        load(config_path=cfg, env_path=env)
+    assert any(
+        i.path == "tier_mapping.rules.Weird.resolution"
+        for i in exc.value.issues
+    )
+
+
+def test_tier_mapping_empty_rules_is_valid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(tmp_path)
+    # No [tier_mapping.rules.*] tables — valid TOML, empty mapping
+    result = load(config_path=cfg, env_path=env)
+    assert result.tier_mapping.rules == {}
+
+
+def test_load_collects_multiple_issues(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("CIVICRM_API_KEY", raising=False)
+    monkeypatch.delenv("UNIFI_API_KEY", raising=False)
+    cfg = tmp_path / "config.toml"
+    env = tmp_path / "env"
+    cfg.write_text(
+        "cadence_seconds = 10\n"  # too low
+        "[civicrm]\n"
+        'host = "http://no-tls"\n'  # http not https
+        "[unifi]\n"
+        'host = "https://ok"\n'
+        'tls_fingerprint = "not-a-fingerprint"\n'  # bad
+    )
+    env.write_text("")  # missing both API keys
+    with pytest.raises(ConfigError) as exc:
+        load(config_path=cfg, env_path=env)
+    paths = {i.path for i in exc.value.issues}
+    assert "cadence_seconds" in paths
+    assert "civicrm.host" in paths
+    assert "unifi.tls_fingerprint" in paths
+    assert "CIVICRM_API_KEY" in paths
+    assert "UNIFI_API_KEY" in paths
+
+
+# --- env precedence tests ---
+
+
+def test_env_file_wins_over_os_environ(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(tmp_path)
+    env.write_text("CIVICRM_API_KEY=from_file\nUNIFI_API_KEY=from_file\n")
+    monkeypatch.setenv("CIVICRM_API_KEY", "from_environ")
+    monkeypatch.setenv("UNIFI_API_KEY", "from_environ")
+    result = load(config_path=cfg, env_path=env)
+    assert result.civicrm.api_key == "from_file"
+
+
+def test_falls_back_to_os_environ_when_file_lacks_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(tmp_path)
+    env.write_text("CIVICRM_API_KEY=from_file\n")  # UNIFI absent
+    monkeypatch.setenv("UNIFI_API_KEY", "from_environ")
+    result = load(config_path=cfg, env_path=env)
+    assert result.unifi.api_key == "from_environ"
+
+
+def test_missing_required_env_var_is_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("UNIFI_API_KEY", raising=False)
+    cfg, env = _write_minimal_valid(tmp_path)
+    env.write_text("CIVICRM_API_KEY=civikey\n")
+    with pytest.raises(ConfigError) as exc:
+        load(config_path=cfg, env_path=env)
+    assert any(i.path == "UNIFI_API_KEY" for i in exc.value.issues)
+
+
+def test_malformed_env_file_surfaces_as_config_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(tmp_path)
+    env.write_text("THIS LINE HAS NO EQUALS\n")
+    with pytest.raises(ConfigError) as exc:
+        load(config_path=cfg, env_path=env)
+    assert any(i.path == "env_file" for i in exc.value.issues)
