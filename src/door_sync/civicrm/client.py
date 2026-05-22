@@ -9,7 +9,9 @@ Errors surface as CivicrmClientError so the scheduler's per-cycle try/except
 can log and continue.
 """
 
+import json
 from types import TracebackType
+from typing import Any
 
 import httpx
 
@@ -17,6 +19,8 @@ from door_sync.config import CivicrmConfig
 from door_sync.models import CiviMember
 
 _API_PATH = "/wp-json/civicrm/v3/api4"
+_PAGE_SIZE = 250
+_ACTIVE_STATUSES = ["Current", "Grace"]
 
 
 class CivicrmClientError(Exception):
@@ -40,7 +44,71 @@ class CivicrmClient:
         )
 
     def fetch_active(self) -> list[CiviMember]:
-        raise NotImplementedError("implemented in Task 3")
+        contacts = self._fetch_contacts()
+        if not contacts:
+            return []
+        contact_ids = [int(c["id"]) for c in contacts]
+        memberships = self._fetch_memberships(contact_ids)
+
+        types_by_contact: dict[int, list[str]] = {}
+        for m in memberships:
+            cid = int(m["contact_id"])
+            label = str(m["membership_type_id:label"])
+            types_by_contact.setdefault(cid, []).append(label)
+
+        return [
+            CiviMember(
+                contact_id=int(c["id"]),
+                display_name=str(c["display_name"]),
+                card_id=_coerce_card_id(c.get(self._config.card_id_field)),
+                membership_types=types_by_contact.get(int(c["id"]), []),
+            )
+            for c in contacts
+        ]
+
+    def _fetch_contacts(self) -> list[dict[str, Any]]:
+        return self._post(
+            "Contact",
+            "get",
+            {
+                "select": ["id", "display_name", self._config.card_id_field],
+                "where": [
+                    [self._config.card_id_field, "IS NOT EMPTY"],
+                    ["is_deleted", "=", False],
+                ],
+                "limit": _PAGE_SIZE,
+            },
+        )
+
+    def _fetch_memberships(self, contact_ids: list[int]) -> list[dict[str, Any]]:
+        return self._post(
+            "Membership",
+            "get",
+            {
+                "select": [
+                    "contact_id",
+                    "membership_type_id:label",
+                    "status_id:name",
+                ],
+                "where": [
+                    ["contact_id", "IN", contact_ids],
+                    ["status_id:name", "IN", _ACTIVE_STATUSES],
+                ],
+                "limit": _PAGE_SIZE,
+            },
+        )
+
+    def _post(
+        self, entity: str, action: str, params: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        url = f"{_API_PATH}/{entity}/{action}"
+        data = {"params": json.dumps(params)}
+        response = self._http.post(url, data=data)
+        payload = response.json()
+        values = payload.get("values", [])
+        if not isinstance(values, list):
+            return []
+        return values
 
     def close(self) -> None:
         self._http.close()
@@ -55,3 +123,15 @@ class CivicrmClient:
         tb: TracebackType | None,
     ) -> None:
         self.close()
+
+
+def _coerce_card_id(raw: object) -> int | None:
+    """CiviCRM may return card_id as int or string depending on the field type.
+
+    Empty string and None map to None; everything else is parsed as int.
+    Caller has already filtered contacts to non-empty card_id, so the None
+    path is defensive only.
+    """
+    if raw is None or raw == "":
+        return None
+    return int(raw)  # type: ignore[call-overload, no-any-return]

@@ -1,6 +1,10 @@
 """Tests for the CiviCRM API4 client."""
 
-import pytest
+import json
+import urllib.parse
+from typing import Any
+
+from pytest_httpx import HTTPXMock
 
 from door_sync.civicrm.client import CivicrmClient
 from door_sync.config import CivicrmConfig
@@ -14,6 +18,59 @@ def _config() -> CivicrmConfig:
     )
 
 
+def _contact(
+    contact_id: int,
+    display_name: str = "Test Person",
+    card_id: int | str = 100,
+) -> dict[str, Any]:
+    return {
+        "id": contact_id,
+        "display_name": display_name,
+        "Door_Access.card_id": card_id,
+    }
+
+
+def _membership(
+    contact_id: int,
+    type_label: str = "Gold",
+    status_name: str = "Current",
+) -> dict[str, Any]:
+    return {
+        "contact_id": contact_id,
+        "membership_type_id:label": type_label,
+        "status_id:name": status_name,
+    }
+
+
+def _values_response(values: list[dict[str, Any]]) -> dict[str, Any]:
+    return {"values": values, "count": len(values)}
+
+
+def _register_contacts(
+    httpx_mock: HTTPXMock,
+    values: list[dict[str, Any]],
+) -> None:
+    httpx_mock.add_response(
+        method="POST",
+        url="https://civi.example.org/wp-json/civicrm/v3/api4/Contact/get",
+        json=_values_response(values),
+    )
+
+
+def _register_memberships(
+    httpx_mock: HTTPXMock,
+    values: list[dict[str, Any]],
+) -> None:
+    httpx_mock.add_response(
+        method="POST",
+        url="https://civi.example.org/wp-json/civicrm/v3/api4/Membership/get",
+        json=_values_response(values),
+    )
+
+
+# --- Lifecycle ---
+
+
 def test_context_manager_closes_http_client() -> None:
     """Using CivicrmClient as a context manager closes the underlying httpx.Client."""
     with CivicrmClient(_config()) as client:
@@ -21,8 +78,111 @@ def test_context_manager_closes_http_client() -> None:
     assert client._http.is_closed is True
 
 
-def test_fetch_active_raises_not_implemented_for_now() -> None:
-    """Sanity: skeleton-only client raises NotImplementedError. Replaced in Task 3."""
+# --- fetch_active happy paths ---
+
+
+def test_fetch_active_happy_path(httpx_mock: HTTPXMock) -> None:
+    """One contact, one Current membership → one CiviMember with the right fields."""
+    _register_contacts(httpx_mock, [_contact(42, "Jane Doe", card_id=12345)])
+    _register_memberships(httpx_mock, [_membership(42, "Gold", "Current")])
+
     with CivicrmClient(_config()) as client:
-        with pytest.raises(NotImplementedError):
-            client.fetch_active()
+        result = client.fetch_active()
+
+    assert len(result) == 1
+    member = result[0]
+    assert member.contact_id == 42
+    assert member.display_name == "Jane Doe"
+    assert member.card_id == 12345
+    assert member.membership_types == ["Gold"]
+
+
+def test_fetch_active_empty_result(httpx_mock: HTTPXMock) -> None:
+    """Zero contacts → returns []. The memberships query is NOT made."""
+    _register_contacts(httpx_mock, [])
+    # NOTE: no membership response registered — if the client tried to call it,
+    # pytest-httpx would raise an unregistered-request error.
+
+    with CivicrmClient(_config()) as client:
+        result = client.fetch_active()
+
+    assert result == []
+
+
+def test_contact_with_multiple_active_memberships(httpx_mock: HTTPXMock) -> None:
+    """Contact with both Gold (Current) and Comp (Current) → membership_types has both."""
+    _register_contacts(httpx_mock, [_contact(42)])
+    _register_memberships(
+        httpx_mock,
+        [
+            _membership(42, "Gold", "Current"),
+            _membership(42, "Comp", "Current"),
+        ],
+    )
+
+    with CivicrmClient(_config()) as client:
+        result = client.fetch_active()
+
+    assert len(result) == 1
+    assert sorted(result[0].membership_types) == ["Comp", "Gold"]
+
+
+def test_contact_with_no_active_membership_kept_with_empty_types(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Contact has card_id but no Current/Grace memberships → empty list, NOT excluded.
+
+    This member resolves to "unmapped" in tier_mapping, which the safety guard
+    halts on — surfacing the data issue rather than silently ignoring.
+    """
+    _register_contacts(httpx_mock, [_contact(42)])
+    _register_memberships(httpx_mock, [])
+
+    with CivicrmClient(_config()) as client:
+        result = client.fetch_active()
+
+    assert len(result) == 1
+    assert result[0].contact_id == 42
+    assert result[0].membership_types == []
+
+
+def test_expired_memberships_filtered(httpx_mock: HTTPXMock) -> None:
+    """Server-side where filter only returns Current/Grace.
+
+    This test verifies the client passes the correct filter; it doesn't test
+    CiviCRM's filtering behavior. We register only what the server would return
+    (i.e., already filtered), and assert the membership_types reflect that.
+    """
+    _register_contacts(httpx_mock, [_contact(42)])
+    _register_memberships(
+        httpx_mock,
+        [
+            # Server returned only the Grace one because of our where clause
+            _membership(42, "Silver", "Grace"),
+        ],
+    )
+
+    with CivicrmClient(_config()) as client:
+        result = client.fetch_active()
+
+    assert result[0].membership_types == ["Silver"]
+
+
+def test_request_uses_bearer_auth_and_form_body(httpx_mock: HTTPXMock) -> None:
+    """Sanity-check the HTTP shape (auth header + form body) against spec §5."""
+    _register_contacts(httpx_mock, [])
+
+    with CivicrmClient(_config()) as client:
+        client.fetch_active()
+
+    requests = httpx_mock.get_requests()
+    assert len(requests) == 1
+    req = requests[0]
+    assert req.headers["authorization"] == "Bearer testkey"
+    assert req.headers["content-type"].startswith("application/x-www-form-urlencoded")
+    # Body is form-encoded `params=<json>`. Decode and verify the JSON shape.
+    body = req.content.decode()
+    parsed = urllib.parse.parse_qs(body)
+    params = json.loads(parsed["params"][0])
+    assert "select" in params
+    assert params["select"] == ["id", "display_name", "Door_Access.card_id"]
