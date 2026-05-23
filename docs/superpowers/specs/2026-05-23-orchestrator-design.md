@@ -95,14 +95,21 @@ def reconcile(config: Config, *, dry_run: bool) -> ReconcileResult:
     check = safety.check(diff, baseline=active_baseline, thresholds=config.safety)
 
     if check.halted:
-        audit.log_halt(check.reason, diff, dry_run=dry_run, path=paths.audit_jsonl)
+        audit.log_halt(
+            check.reason, diff,
+            dry_run=dry_run, path=paths.audit_jsonl,
+            facility_code=config.unifi.facility_code,
+        )
         alert.raise_(check.reason, path=paths.alert_flag)
         if not dry_run:
             state.write_halt(paths.state_json, reason=check.reason)
         return ReconcileResult(halted=True, reason=check.reason, diff=diff)
 
     unifi.apply(diff)
-    audit.log_applied(diff, dry_run=dry_run, path=paths.audit_jsonl)
+    audit.log_applied(
+        diff, dry_run=dry_run, path=paths.audit_jsonl,
+        facility_code=config.unifi.facility_code,
+    )
     if not dry_run:
         state.write_success(paths.state_json)
         alert.clear(path=paths.alert_flag)
@@ -136,10 +143,12 @@ JSONL file, append-only. One line per cycle outcome. Compatible with logrotate `
 ### API
 
 ```python
-def log_applied(diff: Diff, *, dry_run: bool, path: Path) -> None
-def log_halt(reason: str, diff: Diff, *, dry_run: bool, path: Path) -> None
+def log_applied(diff: Diff, *, dry_run: bool, path: Path, facility_code: int) -> None
+def log_halt(reason: str, diff: Diff, *, dry_run: bool, path: Path, facility_code: int) -> None
 def log_crashed(exc: BaseException, *, path: Path) -> None
 ```
+
+`facility_code` is required for `log_applied`/`log_halt` because the schema (§6) records `nfc_id` hex last-4, and `nfc_id = (facility_code << 16) | card_id`. The orchestrator passes `config.unifi.facility_code`.
 
 ### Schema v1
 
