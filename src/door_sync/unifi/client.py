@@ -11,6 +11,7 @@ them. See docs/architecture.md §4-§5 for the layering rules.
 
 import hashlib
 import json as _json
+import logging
 import random
 import socket
 import ssl
@@ -22,11 +23,14 @@ from typing import Any
 import httpx
 
 from door_sync.config import UnifiConfig
+from door_sync.models import UnifiUser
 
 _UNIFI_PORT = 12445
 _MAX_ATTEMPTS = 3
 _MAX_PAGES = 1_000
 _PAGE_SIZE = 100
+
+logger = logging.getLogger(__name__)
 
 
 class UnifiClientError(Exception):
@@ -51,6 +55,10 @@ class UnifiClient:
             verify=False,
             headers={"Authorization": f"Bearer {config.api_key}"},
         )
+        self._unifi_user_id_by_contact: dict[int, str] = {}
+        self._nfc_cards_by_contact: dict[int, list[dict[str, Any]]] = {}
+        self._nfc_token_map: dict[int, str] | None = None
+        self._fetched_users_done = False
 
     def _verify_tls_fingerprint(self) -> None:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
@@ -155,6 +163,90 @@ class UnifiClient:
             return response
 
         raise UnifiClientError("retry loop exited unexpectedly")
+
+    def fetch_users(self) -> list[UnifiUser]:
+        results: list[UnifiUser] = []
+        for page_num in range(1, _MAX_PAGES + 1):
+            data = self._request(
+                "GET",
+                "/api/v1/developer/users",
+                params={
+                    "page_num": page_num,
+                    "page_size": _PAGE_SIZE,
+                    "expand[]": "access_policy",
+                },
+            )
+            if not isinstance(data, list):
+                raise UnifiClientError(
+                    f"expected list of users from /users, got {type(data).__name__}"
+                )
+            for row in data:
+                user = self._row_to_unifi_user(row)
+                if user is not None:
+                    results.append(user)
+            if len(data) < _PAGE_SIZE:
+                self._fetched_users_done = True
+                return results
+        raise UnifiClientError(
+            f"/users pagination exceeded {_MAX_PAGES} pages without terminating"
+        )
+
+    def _row_to_unifi_user(self, row: dict[str, Any]) -> UnifiUser | None:
+        emp_raw = row.get("employee_number") or ""
+        try:
+            contact_id = int(emp_raw)
+        except (ValueError, TypeError):
+            return None
+        user_id = str(row.get("id", ""))
+        if not user_id:
+            return None
+        self._unifi_user_id_by_contact[contact_id] = user_id
+
+        nfc_cards = row.get("nfc_cards") or []
+        if not isinstance(nfc_cards, list):
+            nfc_cards = []
+        self._nfc_cards_by_contact[contact_id] = list(nfc_cards)
+
+        card_id: int | None = None
+        if len(nfc_cards) > 1:
+            logger.warning(
+                "contact %d has %d cards in UniFi; using the first",
+                contact_id,
+                len(nfc_cards),
+            )
+        if nfc_cards:
+            nfc_id_raw = str(nfc_cards[0].get("nfc_id", ""))
+            card_id = _parse_nfc_id(nfc_id_raw, self._config.facility_code)
+            if card_id is None and nfc_id_raw:
+                logger.warning(
+                    "contact %d has foreign-FC card nfc_id=%s; treating as no card",
+                    contact_id,
+                    _redact(None),
+                )
+
+        policies = row.get("access_policy_ids") or []
+        if not isinstance(policies, list):
+            policies = []
+        if len(policies) > 1:
+            logger.warning(
+                "contact %d has %d access policies; using the first",
+                contact_id,
+                len(policies),
+            )
+        policy = str(policies[0]) if policies else None
+
+        first_name = str(row.get("first_name", ""))
+        last_name = str(row.get("last_name", ""))
+        display_name = " ".join(part for part in [first_name, last_name] if part).strip()
+        active = str(row.get("status", "")) == "ACTIVE"
+
+        return UnifiUser(
+            contact_id=contact_id,
+            display_name=display_name,
+            card_id=card_id,
+            active=active,
+            policy=policy,
+        )
 
     def close(self) -> None:
         # httpx.Client may not exist if __init__ failed before constructing it.

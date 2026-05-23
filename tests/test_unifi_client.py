@@ -1,6 +1,7 @@
 """Tests for the UniFi Access client."""
 
 import hashlib
+import logging
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -196,7 +197,7 @@ def test_non_success_envelope_raises(httpx_mock: HTTPXMock) -> None:
     )
     client = _make_client(httpx_mock)
     with pytest.raises(UnifiClientError) as exc_info:
-        client.fetch_users()  # type: ignore[attr-defined]
+        client.fetch_users()
     assert "CODE_AUTH_FAILED" in str(exc_info.value)
     assert "Authentication failed." in str(exc_info.value)
     client.close()
@@ -216,7 +217,7 @@ def test_http_500_retries_then_raises(
         )
     client = _make_client(httpx_mock)
     with pytest.raises(UnifiClientError) as exc_info:
-        client.fetch_users()  # type: ignore[attr-defined]
+        client.fetch_users()
     assert "HTTP 500" in str(exc_info.value)
     client.close()
 
@@ -231,7 +232,7 @@ def test_http_402_raises_immediately_no_retry(httpx_mock: HTTPXMock) -> None:
     )
     client = _make_client(httpx_mock)
     with pytest.raises(UnifiClientError) as exc_info:
-        client.fetch_users()  # type: ignore[attr-defined]
+        client.fetch_users()
     assert "HTTP 402" in str(exc_info.value)
     # Only one request should have been made.
     assert len(httpx_mock.get_requests()) == 1
@@ -258,7 +259,7 @@ def test_http_429_honors_retry_after_seconds(
         json={"code": "SUCCESS", "data": [], "msg": "success", "pagination": {"page_num": 1, "page_size": 100, "total": 0}},
     )
     client = _make_client(httpx_mock)
-    client.fetch_users()  # type: ignore[attr-defined]
+    client.fetch_users()
     assert any(s >= 5 for s in sleeps)
     client.close()
 
@@ -272,6 +273,156 @@ def test_malformed_json_raises(httpx_mock: HTTPXMock) -> None:
     )
     client = _make_client(httpx_mock)
     with pytest.raises(UnifiClientError) as exc_info:
-        client.fetch_users()  # type: ignore[attr-defined]
+        client.fetch_users()
     assert "malformed JSON" in str(exc_info.value)
+    client.close()
+
+
+# --- fetch_users ---
+
+
+def _user_row(
+    contact_id: int = 42,
+    user_id: str = "uuid-42",
+    first_name: str = "Jane",
+    last_name: str = "Doe",
+    status: str = "ACTIVE",
+    nfc_id: str = "2A04D2",
+    policy_id: str = "pol-1",
+    nfc_token: str = "tok-42",
+) -> dict[str, Any]:
+    return {
+        "id": user_id,
+        "first_name": first_name,
+        "last_name": last_name,
+        "employee_number": str(contact_id),
+        "status": status,
+        "nfc_cards": [{"id": "100001", "nfc_id": nfc_id, "token": nfc_token}],
+        "access_policy_ids": [policy_id],
+    }
+
+
+def _users_page(rows: list[dict[str, Any]], total: int | None = None) -> dict[str, Any]:
+    return {
+        "code": "SUCCESS",
+        "msg": "success",
+        "data": rows,
+        "pagination": {
+            "page_num": 1,
+            "page_size": 100 if total is None else min(100, total),
+            "total": len(rows) if total is None else total,
+        },
+    }
+
+
+def test_fetch_users_happy_path(httpx_mock: HTTPXMock) -> None:
+    """One page, returns list[UnifiUser] with parsed fields."""
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page([_user_row(contact_id=42)]),
+    )
+    client = _make_client(httpx_mock)
+    users = client.fetch_users()
+    assert len(users) == 1
+    u = users[0]
+    assert u.contact_id == 42
+    assert u.display_name == "Jane Doe"
+    assert u.card_id == 1234  # 2A04D2 decoded with FC=42 -> CN=1234
+    assert u.active is True
+    assert u.policy == "pol-1"
+    client.close()
+
+
+def test_fetch_users_paginates(httpx_mock: HTTPXMock) -> None:
+    """101 users across 2 pages; follows until short page."""
+    page1 = [_user_row(contact_id=i, user_id=f"uuid-{i}") for i in range(1, 101)]
+    page2 = [_user_row(contact_id=101, user_id="uuid-101")]
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page(page1, total=101),
+    )
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=2&page_size=100&expand[]=access_policy",
+        json=_users_page(page2, total=101),
+    )
+    client = _make_client(httpx_mock)
+    users = client.fetch_users()
+    assert len(users) == 101
+    assert {u.contact_id for u in users} == set(range(1, 102))
+    client.close()
+
+
+def test_fetch_users_skips_admin_without_employee_number(
+    httpx_mock: HTTPXMock,
+) -> None:
+    rows = [
+        _user_row(contact_id=42),
+        {**_user_row(contact_id=0), "employee_number": ""},  # admin
+    ]
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page(rows),
+    )
+    client = _make_client(httpx_mock)
+    users = client.fetch_users()
+    assert {u.contact_id for u in users} == {42}
+    client.close()
+
+
+def test_fetch_users_skips_non_int_employee_number(
+    httpx_mock: HTTPXMock,
+) -> None:
+    rows = [
+        _user_row(contact_id=42),
+        {**_user_row(contact_id=0), "employee_number": "bob"},
+    ]
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page(rows),
+    )
+    client = _make_client(httpx_mock)
+    users = client.fetch_users()
+    assert {u.contact_id for u in users} == {42}
+    client.close()
+
+
+def test_fetch_users_logs_warning_on_multiple_cards(
+    httpx_mock: HTTPXMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    row = _user_row(contact_id=42)
+    row["nfc_cards"] = [
+        {"id": "100001", "nfc_id": "2A04D2", "token": "tok-1"},
+        {"id": "100002", "nfc_id": "2A04D3", "token": "tok-2"},
+    ]
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page([row]),
+    )
+    with caplog.at_level(logging.WARNING, logger="door_sync.unifi.client"):
+        client = _make_client(httpx_mock)
+        users = client.fetch_users()
+    assert users[0].card_id == 1234  # uses the first card
+    assert any("2 cards" in rec.message for rec in caplog.records)
+    client.close()
+
+
+def test_fetch_users_foreign_fc_card_yields_card_id_none(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """A card with a non-configured facility code -> card_id=None on the user."""
+    row = _user_row(contact_id=42, nfc_id="990000")  # FC=99, not 42
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page([row]),
+    )
+    client = _make_client(httpx_mock)
+    users = client.fetch_users()
+    assert users[0].card_id is None
     client.close()
