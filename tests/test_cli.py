@@ -40,6 +40,9 @@ def test_print_diff_renders_five_sections() -> None:
     assert "Dave" in text
     assert "=== UNMAPPED (1) ===" in text
     assert "Eve" in text
+    # Eve has target_policy=None — no [policy=...] tag should appear on her line
+    eve_line = next(line for line in text.splitlines() if "Eve" in line)
+    assert "[policy=" not in eve_line
 
 
 def test_print_diff_empty_sections_still_print_header() -> None:

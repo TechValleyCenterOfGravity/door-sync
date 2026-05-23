@@ -40,7 +40,7 @@ def _format_member(m: ResolvedMember) -> str:
     parts = [str(m.contact_id), m.display_name]
     if m.card_id is not None:
         parts.append(f"[card_last4={_last4(m.card_id)}]")
-    if m.target_policy:
+    if m.target_policy is not None:
         parts.append(f"[policy={m.target_policy}]")
     return " ".join(parts)
 
@@ -49,7 +49,7 @@ def _format_user(u: UnifiUser) -> str:
     parts = [str(u.contact_id), u.display_name]
     if u.card_id is not None:
         parts.append(f"[card_last4={_last4(u.card_id)}]")
-    if u.policy:
+    if u.policy is not None:
         parts.append(f"[policy={u.policy}]")
     return " ".join(parts)
 
