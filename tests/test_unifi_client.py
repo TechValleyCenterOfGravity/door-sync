@@ -1,6 +1,15 @@
 """Tests for the UniFi Access client."""
 
+import hashlib
+from typing import Any
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from door_sync.config import UnifiConfig
 from door_sync.unifi.client import (
+    UnifiClient,
+    UnifiClientError,
     _compute_nfc_id,
     _parse_nfc_id,
     _redact,
@@ -62,7 +71,6 @@ def test_split_name_single_word_pads_last_name() -> None:
 
 def test_split_name_empty_string_raises() -> None:
     """Empty display_name should never reach us; defensive."""
-    import pytest
     with pytest.raises(ValueError):
         _split_name("")
 
@@ -86,3 +94,81 @@ def test_redact_full_width_card_id() -> None:
 def test_redact_strips_high_digits() -> None:
     """Only the last 4 digits ever appear in logs."""
     assert _redact(98765) == "****8765"
+
+
+# --- Construction / TLS ---
+
+
+def _unifi_config(fingerprint: str = "AA" * 32) -> UnifiConfig:
+    return UnifiConfig(
+        host="192.0.2.1",
+        api_key="testkey",
+        tls_fingerprint=fingerprint,
+        facility_code=42,
+    )
+
+
+def _patched_tls(cert_der: bytes) -> Any:
+    """Context-manager that stubs socket+ssl to return cert_der as peer cert."""
+    mock_ssock = MagicMock()
+    mock_ssock.getpeercert.return_value = cert_der
+    mock_ssock.__enter__.return_value = mock_ssock
+    mock_ssock.__exit__.return_value = None
+
+    mock_ctx = MagicMock()
+    mock_ctx.wrap_socket.return_value = mock_ssock
+
+    mock_sock = MagicMock()
+    mock_sock.__enter__.return_value = mock_sock
+    mock_sock.__exit__.return_value = None
+
+    return patch.multiple(
+        "door_sync.unifi.client",
+        socket=MagicMock(create_connection=MagicMock(return_value=mock_sock)),
+        ssl=MagicMock(SSLContext=MagicMock(return_value=mock_ctx), CERT_NONE=0, PROTOCOL_TLS_CLIENT=0),
+    )
+
+
+def test_init_raises_on_tls_fingerprint_mismatch() -> None:
+    """Wrong fingerprint at init must raise before httpx.Client is built."""
+    real_cert = b"fake-cert-bytes"
+    real_fp = hashlib.sha256(real_cert).hexdigest()
+    wrong_fp = "BB" * 32
+    assert real_fp != wrong_fp
+    config = _unifi_config(fingerprint=wrong_fp)
+    with _patched_tls(real_cert):
+        with pytest.raises(UnifiClientError) as exc_info:
+            UnifiClient(config)
+        assert "TLS fingerprint mismatch" in str(exc_info.value)
+
+
+def test_init_verifies_tls_fingerprint_match() -> None:
+    """Matching fingerprint at init constructs the client successfully."""
+    real_cert = b"fake-cert-bytes"
+    real_fp = hashlib.sha256(real_cert).hexdigest()
+    config = _unifi_config(fingerprint=real_fp)
+    with _patched_tls(real_cert):
+        client = UnifiClient(config)
+    assert client._http is not None
+    client.close()
+
+
+def test_init_accepts_colon_separated_fingerprint() -> None:
+    """The fingerprint can be passed as AA:BB:CC:... (common format)."""
+    real_cert = b"fake-cert-bytes"
+    real_fp = hashlib.sha256(real_cert).hexdigest()
+    colon_form = ":".join(real_fp[i : i + 2] for i in range(0, len(real_fp), 2))
+    config = _unifi_config(fingerprint=colon_form)
+    with _patched_tls(real_cert):
+        client = UnifiClient(config)
+    client.close()
+
+
+def test_context_manager_closes_http_client() -> None:
+    real_cert = b"fake-cert-bytes"
+    real_fp = hashlib.sha256(real_cert).hexdigest()
+    config = _unifi_config(fingerprint=real_fp)
+    with _patched_tls(real_cert):
+        with UnifiClient(config) as client:
+            assert client._http.is_closed is False
+    assert client._http.is_closed is True

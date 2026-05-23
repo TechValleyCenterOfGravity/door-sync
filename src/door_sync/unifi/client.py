@@ -9,6 +9,79 @@ surface as UnifiClientError; the scheduler's per-cycle try/except handles
 them. See docs/architecture.md §4-§5 for the layering rules.
 """
 
+import hashlib
+import socket
+import ssl
+from types import TracebackType
+
+import httpx
+
+from door_sync.config import UnifiConfig
+
+_UNIFI_PORT = 12445
+
+
+class UnifiClientError(Exception):
+    """Raised on non-recoverable UniFi Access API failure."""
+
+
+class UnifiClient:
+    """Read+write UniFi Access local-API client.
+
+    Construct one per reconcile cycle. Use as a context manager, or call
+    close() explicitly. Honors a dry_run flag that turns writes into
+    redacted log lines (architecture §5).
+    """
+
+    def __init__(self, config: UnifiConfig, *, dry_run: bool = False) -> None:
+        self._config = config
+        self._dry_run = dry_run
+        self._verify_tls_fingerprint()
+        self._http = httpx.Client(
+            base_url=f"https://{config.host}:{_UNIFI_PORT}",
+            timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0),
+            verify=False,
+            headers={"Authorization": f"Bearer {config.api_key}"},
+        )
+
+    def _verify_tls_fingerprint(self) -> None:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        with socket.create_connection(
+            (self._config.host, _UNIFI_PORT), timeout=10
+        ) as raw:
+            with ctx.wrap_socket(raw, server_hostname=self._config.host) as wrapped:
+                cert_der = wrapped.getpeercert(binary_form=True)
+        if cert_der is None:
+            raise UnifiClientError("TLS handshake produced no peer certificate")
+        actual_fp = hashlib.sha256(cert_der).hexdigest().lower()
+        expected_fp = (
+            self._config.tls_fingerprint.lower().replace(":", "")
+        )
+        if actual_fp != expected_fp:
+            raise UnifiClientError(
+                f"TLS fingerprint mismatch: expected {expected_fp[:16]}…, "
+                f"got {actual_fp[:16]}…"
+            )
+
+    def close(self) -> None:
+        # httpx.Client may not exist if __init__ failed before constructing it.
+        http = getattr(self, "_http", None)
+        if http is not None:
+            http.close()
+
+    def __enter__(self) -> "UnifiClient":
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self.close()
+
 
 def _compute_nfc_id(facility_code: int, card_id: int) -> str:
     """Encode a Wiegand-26 (FC, CN) pair the way UniFi exposes it in nfc_id.
