@@ -2,14 +2,14 @@
 
 CiviCRM → UniFi Access reconciliation daemon. Runs on a Raspberry Pi under systemd.
 
-**Status: pre-implementation.** Module skeleton exists in `src/door_sync/` but reconciler/safety/clients are not yet written. Architecture is locked; see `docs/architecture.md` before adding code.
+**Status: in active development.** Pure modules (reconciler, safety, tier_mapping), the CiviCRM client, and the UniFi Access client are merged. Orchestrator, scheduler, audit, state, alert still TBD. Architecture is locked; see `docs/architecture.md` before adding code.
 
 ## Commands
 
 ```bash
 uv sync                       # install
 uv run pytest                 # tests
-uv run mypy src tests         # type check (strict)
+uv run mypy --strict src tests   # type check (strict)
 uv run ruff check .           # lint
 uv run door-sync --once       # one reconcile cycle, exit
 uv run door-sync --dry-run    # compute + log diff; no UniFi writes
@@ -35,6 +35,10 @@ All tooling goes through `uv run` — the venv is managed by uv, not pip.
 
 - Pure-module tests use plain dataclass construction — no mocks, no HTTP fixtures.
 - Idempotency canary: `compute_diff` immediately after `unifi.apply()` must yield all-empty diff sets. Include this test for the reconciler (architecture.md §8).
+
+## IDE diagnostics
+
+- mypy is the authoritative type checker; Pyright in the IDE lags on new packages and false-flags `__exit__` protocol args / underscore-prefixed unused params. When `uv run mypy --strict src tests`, `ruff check`, and `pytest` are all green, trust them.
 
 ## Config
 
