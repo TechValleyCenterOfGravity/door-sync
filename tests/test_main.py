@@ -65,13 +65,10 @@ def test_run_once_success_exits_zero(
 ) -> None:
     cfg = _build_config(tmp_path)
     _patch_config_load(monkeypatch, cfg)
-    monkeypatch.setattr(
-        orchestrator,
-        "reconcile",
-        lambda c, *, dry_run: ReconcileResult(
-            halted=False, reason=None, diff=Diff([], [], [], [], [])
-        ),
-    )
+    def _ok(c: Config, *, dry_run: bool) -> ReconcileResult:
+        return ReconcileResult(halted=False, reason=None, diff=Diff([], [], [], [], []))
+
+    monkeypatch.setattr(orchestrator, "reconcile", _ok)
 
     rc = main_mod.main(argv=["run", "--once"])
     assert rc == 0
@@ -82,15 +79,12 @@ def test_run_once_halt_exits_one(
 ) -> None:
     cfg = _build_config(tmp_path)
     _patch_config_load(monkeypatch, cfg)
-    monkeypatch.setattr(
-        orchestrator,
-        "reconcile",
-        lambda c, *, dry_run: ReconcileResult(
-            halted=True,
-            reason="mass_deactivate",
-            diff=Diff([], [], [], [], []),
-        ),
-    )
+    def _halt(c: Config, *, dry_run: bool) -> ReconcileResult:
+        return ReconcileResult(
+            halted=True, reason="mass_deactivate", diff=Diff([], [], [], [], [])
+        )
+
+    monkeypatch.setattr(orchestrator, "reconcile", _halt)
 
     rc = main_mod.main(argv=["run", "--once"])
     assert rc == 1

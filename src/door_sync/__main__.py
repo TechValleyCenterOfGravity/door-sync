@@ -8,7 +8,7 @@ Subcommands:
 Exit codes:
   0  success
   1  cycle halted by safety guards; config validation failed
-  2  cycle crashed (exception escaped orchestrator)
+  2  cycle crashed (exception escaped orchestrator); show-diff fetch failed
  64  CLI usage error (argparse default; also bare `run` without --once)
 
 Daemon mode (loop, SIGTERM handling) is not yet implemented — that arrives
@@ -117,8 +117,11 @@ def cmd_run(args: argparse.Namespace) -> int:
     except Exception as exc:
         _logger.exception("orchestrator crashed")
         audit.log_crashed(exc, path=config.ops_paths.audit_jsonl)
+        exc_msg = str(exc)
+        if len(exc_msg) > 200:
+            exc_msg = exc_msg[:200] + "..."
         alert.raise_(
-            f"crashed: {type(exc).__name__}: {exc}",
+            f"crashed: {type(exc).__name__}: {exc_msg}",
             path=config.ops_paths.alert_flag,
         )
         return 2
