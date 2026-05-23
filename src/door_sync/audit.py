@@ -78,6 +78,9 @@ def _summary(diff: Diff) -> dict[str, int]:
 
 
 def _card_last4(diff: Diff, facility_code: int) -> dict[str, list[str]]:
+    # to_update_policy carries cards but the change is policy-only;
+    # unmapped entries are intentionally not actioned. Both omitted to keep
+    # card_last4 focused on cards that were actually written or revoked.
     return {
         "added": [
             _last4_nfc(m.card_id, facility_code)
@@ -99,8 +102,7 @@ def _card_last4(diff: Diff, facility_code: int) -> dict[str, list[str]]:
 
 def _last4_nfc(card_id: int, facility_code: int) -> str:
     nfc_id = (facility_code << 16) | card_id
-    nfc_hex = format(nfc_id, "X")
-    return nfc_hex[-4:] if len(nfc_hex) >= 4 else nfc_hex.rjust(4, "0")
+    return format(nfc_id, "X")[-4:]
 
 
 def _append(path: Path, record: dict[str, Any]) -> None:
