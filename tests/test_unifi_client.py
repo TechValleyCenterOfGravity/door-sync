@@ -1336,6 +1336,51 @@ def test_unifi_client_constructs_from_loaded_config(
     client.close()
 
 
+def test_unifi_client_host_without_port_defaults_to_12445() -> None:
+    """If config.host omits the port, both TLS verification and base_url
+    must default to UniFi Access's fixed port 12445 — same target for both.
+
+    Regression guard: previously base_url=config.host let httpx default to
+    443 while _verify_tls_fingerprint pinned on 12445, so the two could
+    even hit different servers.
+    """
+    cert = b"fake-cert"
+    fp = hashlib.sha256(cert).hexdigest()
+    config = UnifiConfig(
+        host="https://192.0.2.1",  # no port
+        api_key="testkey",
+        tls_fingerprint=fp,
+        facility_code=42,
+    )
+    with _patched_tls(cert):
+        client = UnifiClient(config)
+    # base_url has the default port baked in.
+    assert str(client._http.base_url) == "https://192.0.2.1:12445"
+    # And the internal hostname/port used by TLS verification matches.
+    assert client._hostname == "192.0.2.1"
+    assert client._port == 12445
+    client.close()
+
+
+def test_unifi_client_host_with_custom_port_preserves_it() -> None:
+    """An explicit non-standard port in config.host is preserved in both
+    base_url and the TLS-verification target.
+    """
+    cert = b"fake-cert"
+    fp = hashlib.sha256(cert).hexdigest()
+    config = UnifiConfig(
+        host="https://192.0.2.1:8443",
+        api_key="testkey",
+        tls_fingerprint=fp,
+        facility_code=42,
+    )
+    with _patched_tls(cert):
+        client = UnifiClient(config)
+    assert str(client._http.base_url) == "https://192.0.2.1:8443"
+    assert client._port == 8443
+    client.close()
+
+
 def test_apply_dry_run_logs_would_import_for_unknown_cards(
     httpx_mock: HTTPXMock, caplog: pytest.LogCaptureFixture
 ) -> None:

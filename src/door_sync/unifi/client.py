@@ -49,9 +49,17 @@ class UnifiClient:
     def __init__(self, config: UnifiConfig, *, dry_run: bool = False) -> None:
         self._config = config
         self._dry_run = dry_run
+        # Resolve hostname+port once so TLS verification and httpx requests
+        # both target the same endpoint. Without this, a host like
+        # "https://controller.example.org" (no port) would pin TLS on 12445
+        # but send API calls to 443.
+        parsed = urlsplit(config.host)
+        self._hostname = parsed.hostname or config.host
+        self._port = parsed.port or _UNIFI_PORT
+        scheme = parsed.scheme or "https"
         self._verify_tls_fingerprint()
         self._http = httpx.Client(
-            base_url=config.host,
+            base_url=f"{scheme}://{self._hostname}:{self._port}",
             timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0),
             verify=False,
             headers={"Authorization": f"Bearer {config.api_key}"},
@@ -62,9 +70,8 @@ class UnifiClient:
         self._fetched_users_done = False
 
     def _verify_tls_fingerprint(self) -> None:
-        parsed = urlsplit(self._config.host)
-        hostname = parsed.hostname or self._config.host  # fallback if no scheme
-        port = parsed.port or _UNIFI_PORT
+        hostname = self._hostname
+        port = self._port
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
