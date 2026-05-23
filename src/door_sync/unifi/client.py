@@ -295,6 +295,43 @@ class UnifiClient:
                 _redact(unifi_user.card_id),
             )
 
+    def _ensure_nfc_token_map(self) -> dict[int, str]:
+        if self._nfc_token_map is not None:
+            return self._nfc_token_map
+        token_map: dict[int, str] = {}
+        for page_num in range(1, _MAX_PAGES + 1):
+            data = self._request(
+                "GET",
+                "/api/v1/developer/credentials/nfc_cards/tokens",
+                params={"page_num": page_num, "page_size": _PAGE_SIZE},
+            )
+            if not isinstance(data, list):
+                raise UnifiClientError(
+                    f"expected list of cards from /nfc_cards/tokens, "
+                    f"got {type(data).__name__}"
+                )
+            for row in data:
+                nfc_id = str(row.get("nfc_id", ""))
+                token = str(row.get("token", ""))
+                if not nfc_id or not token:
+                    continue
+                card_id = _parse_nfc_id(nfc_id, self._config.facility_code)
+                if card_id is None:
+                    logger.debug(
+                        "skipping foreign-FC or unparseable card nfc_id=%s",
+                        nfc_id,
+                    )
+                    continue
+                token_map[card_id] = token
+            if len(data) < _PAGE_SIZE:
+                break
+        else:
+            raise UnifiClientError(
+                f"/nfc_cards/tokens pagination exceeded {_MAX_PAGES} pages"
+            )
+        self._nfc_token_map = token_map
+        return token_map
+
     def close(self) -> None:
         # httpx.Client may not exist if __init__ failed before constructing it.
         http = getattr(self, "_http", None)

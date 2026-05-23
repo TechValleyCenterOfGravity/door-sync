@@ -521,3 +521,64 @@ def test_apply_dry_run_makes_no_writes(
     assert any("****1234" in m for m in messages)
     assert not any("1234 " in m and "****" not in m for m in messages)
     client.close()
+
+
+# --- NFC token map ---
+
+
+def _cards_page(
+    rows: list[dict[str, Any]], total: int | None = None
+) -> dict[str, Any]:
+    return {
+        "code": "SUCCESS",
+        "msg": "success",
+        "data": rows,
+        "pagination": {
+            "page_num": 1,
+            "page_size": 100,
+            "total": len(rows) if total is None else total,
+        },
+    }
+
+
+def test_token_map_keys_by_parsed_card_id(httpx_mock: HTTPXMock) -> None:
+    """Build dict[card_id → token]; foreign-FC and unparseable rows are skipped."""
+    cert = b"fake-cert"
+    fp = hashlib.sha256(cert).hexdigest()
+    config = _unifi_config(fingerprint=fp)
+    with _patched_tls(cert):
+        client = UnifiClient(config)
+
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_cards_page([
+            {"nfc_id": "2A04D2", "token": "tok-1234", "display_id": "100001"},
+            {"nfc_id": "2A04D3", "token": "tok-1235", "display_id": "100002"},
+            {"nfc_id": "990000", "token": "tok-foreign", "display_id": "100003"},
+            {"nfc_id": "not-hex", "token": "tok-bad", "display_id": "100004"},
+        ]),
+    )
+    token_map = client._ensure_nfc_token_map()
+    assert token_map == {1234: "tok-1234", 1235: "tok-1235"}
+    client.close()
+
+
+def test_token_map_cached_across_calls(httpx_mock: HTTPXMock) -> None:
+    """Second call doesn't re-fetch."""
+    cert = b"fake-cert"
+    fp = hashlib.sha256(cert).hexdigest()
+    config = _unifi_config(fingerprint=fp)
+    with _patched_tls(cert):
+        client = UnifiClient(config)
+
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_cards_page([{"nfc_id": "2A04D2", "token": "tok-1234"}]),
+    )
+    first = client._ensure_nfc_token_map()
+    second = client._ensure_nfc_token_map()
+    assert first is second
+    assert len(httpx_mock.get_requests()) == 1
+    client.close()
