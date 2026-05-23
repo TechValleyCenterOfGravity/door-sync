@@ -179,7 +179,7 @@ def test_context_manager_closes_http_client() -> None:
 # --- Response envelope + retries ---
 
 
-def _make_client(httpx_mock: HTTPXMock) -> UnifiClient:
+def _make_client() -> UnifiClient:
     """Build a UnifiClient with TLS verification stubbed out."""
     cert = b"fake-cert"
     fp = hashlib.sha256(cert).hexdigest()
@@ -195,7 +195,7 @@ def test_non_success_envelope_raises(httpx_mock: HTTPXMock) -> None:
         url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
         json={"code": "CODE_AUTH_FAILED", "msg": "Authentication failed.", "data": None},
     )
-    client = _make_client(httpx_mock)
+    client = _make_client()
     with pytest.raises(UnifiClientError) as exc_info:
         client.fetch_users()
     assert "CODE_AUTH_FAILED" in str(exc_info.value)
@@ -215,7 +215,7 @@ def test_http_500_retries_then_raises(
             status_code=500,
             text="server error",
         )
-    client = _make_client(httpx_mock)
+    client = _make_client()
     with pytest.raises(UnifiClientError) as exc_info:
         client.fetch_users()
     assert "HTTP 500" in str(exc_info.value)
@@ -230,7 +230,7 @@ def test_http_402_raises_immediately_no_retry(httpx_mock: HTTPXMock) -> None:
         status_code=402,
         text="request failed",
     )
-    client = _make_client(httpx_mock)
+    client = _make_client()
     with pytest.raises(UnifiClientError) as exc_info:
         client.fetch_users()
     assert "HTTP 402" in str(exc_info.value)
@@ -258,7 +258,7 @@ def test_http_429_honors_retry_after_seconds(
         url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
         json={"code": "SUCCESS", "data": [], "msg": "success", "pagination": {"page_num": 1, "page_size": 100, "total": 0}},
     )
-    client = _make_client(httpx_mock)
+    client = _make_client()
     client.fetch_users()
     assert any(s >= 5 for s in sleeps)
     client.close()
@@ -271,7 +271,7 @@ def test_malformed_json_raises(httpx_mock: HTTPXMock) -> None:
         url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
         text="<html>not json</html>",
     )
-    client = _make_client(httpx_mock)
+    client = _make_client()
     with pytest.raises(UnifiClientError) as exc_info:
         client.fetch_users()
     assert "malformed JSON" in str(exc_info.value)
@@ -322,7 +322,7 @@ def test_fetch_users_happy_path(httpx_mock: HTTPXMock) -> None:
         url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
         json=_users_page([_user_row(contact_id=42)]),
     )
-    client = _make_client(httpx_mock)
+    client = _make_client()
     users = client.fetch_users()
     assert len(users) == 1
     u = users[0]
@@ -348,7 +348,7 @@ def test_fetch_users_paginates(httpx_mock: HTTPXMock) -> None:
         url="https://192.0.2.1:12445/api/v1/developer/users?page_num=2&page_size=100&expand[]=access_policy",
         json=_users_page(page2, total=101),
     )
-    client = _make_client(httpx_mock)
+    client = _make_client()
     users = client.fetch_users()
     assert len(users) == 101
     assert {u.contact_id for u in users} == set(range(1, 102))
@@ -367,7 +367,7 @@ def test_fetch_users_skips_admin_without_employee_number(
         url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
         json=_users_page(rows),
     )
-    client = _make_client(httpx_mock)
+    client = _make_client()
     users = client.fetch_users()
     assert {u.contact_id for u in users} == {42}
     client.close()
@@ -385,7 +385,7 @@ def test_fetch_users_skips_non_int_employee_number(
         url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
         json=_users_page(rows),
     )
-    client = _make_client(httpx_mock)
+    client = _make_client()
     users = client.fetch_users()
     assert {u.contact_id for u in users} == {42}
     client.close()
@@ -405,7 +405,7 @@ def test_fetch_users_logs_warning_on_multiple_cards(
         json=_users_page([row]),
     )
     with caplog.at_level(logging.WARNING, logger="door_sync.unifi.client"):
-        client = _make_client(httpx_mock)
+        client = _make_client()
         users = client.fetch_users()
     assert users[0].card_id == 1234  # uses the first card
     assert any("2 cards" in rec.message for rec in caplog.records)
@@ -422,7 +422,7 @@ def test_fetch_users_foreign_fc_card_yields_card_id_none(
         url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
         json=_users_page([row]),
     )
-    client = _make_client(httpx_mock)
+    client = _make_client()
     users = client.fetch_users()
     assert users[0].card_id is None
     client.close()

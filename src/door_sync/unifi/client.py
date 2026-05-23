@@ -219,9 +219,8 @@ class UnifiClient:
             card_id = _parse_nfc_id(nfc_id_raw, self._config.facility_code)
             if card_id is None and nfc_id_raw:
                 logger.warning(
-                    "contact %d has foreign-FC card nfc_id=%s; treating as no card",
+                    "contact %d has foreign-FC card; treating as no card",
                     contact_id,
-                    _redact(None),
                 )
 
         policies = row.get("access_policy_ids") or []
