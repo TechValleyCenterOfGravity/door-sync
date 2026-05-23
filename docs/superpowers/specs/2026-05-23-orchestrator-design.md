@@ -311,10 +311,10 @@ validate-config  Load config, print issues if any, exit 0/1
 
 ### Default paths
 
-- `--config` defaults to `/etc/door-sync/config.toml` if it exists, otherwise `./config.toml`
-- `--env-file` defaults to `/etc/door-sync/env` if it exists, otherwise `./.env`
-- Both can be set explicitly
-- The `/etc → ./` fallback is resolved inside each subcommand handler (`cmd_run`, `cmd_show_diff`, `cmd_validate_config`) before calling `config_mod.load`, not in argparse — argparse just records the user's explicit value or `None`
+- argparse stores the user's explicit `--config` / `--env-file` value or `None`
+- CLI handlers pass that value straight through to `config_mod.load(config_path=args.config, env_path=args.env_file)`
+- `config.load` delegates to the existing `_resolve_paths` helper, which already handles defaults: if no explicit path is given, it uses `$DOOR_SYNC_CONFIG_DIR/config.toml` (when the env var is set, e.g. by the prod systemd unit pointing at `/etc/door-sync`), otherwise `./config.toml` and `./.env`
+- No new fallback logic in the CLI layer — the existing pattern handles dev (CWD) and prod (env-var-driven) cleanly
 
 ### Logging setup
 
