@@ -32,7 +32,7 @@ def read(path: Path) -> State:
 
 
 def write_success(path: Path, *, now: datetime | None = None) -> None:
-    current = read(path) if path.exists() else State(None, None, None, 0)
+    current = read(path)
     when = now if now is not None else datetime.now(UTC)
     new = State(
         last_success_iso=_iso_z(when),
@@ -44,7 +44,7 @@ def write_success(path: Path, *, now: datetime | None = None) -> None:
 
 
 def write_halt(path: Path, reason: str, *, now: datetime | None = None) -> None:
-    current = read(path) if path.exists() else State(None, None, None, 0)
+    current = read(path)
     when = now if now is not None else datetime.now(UTC)
     new = State(
         last_success_iso=current.last_success_iso,
