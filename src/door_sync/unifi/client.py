@@ -35,3 +35,30 @@ def _parse_nfc_id(nfc_id: str, expected_facility_code: int) -> int | None:
     if fc != expected_facility_code:
         return None
     return cn
+
+
+def _split_name(display_name: str) -> tuple[str, str]:
+    """Split a CiviCRM display_name into (first_name, last_name) for UniFi.
+
+    Splits on the last space: 'Mary Anne Doe' -> ('Mary Anne', 'Doe').
+    Single-word names get '—' as a placeholder last_name (UniFi requires
+    both on create; the em-dash is visibly distinct so an operator
+    notices and can edit in CiviCRM).
+    """
+    if not display_name:
+        raise ValueError("display_name must be non-empty")
+    if " " not in display_name:
+        return (display_name, "—")
+    first, _, last = display_name.rpartition(" ")
+    return (first, last)
+
+
+def _redact(card_id: int | None) -> str:
+    """Return a last-4 redacted form of a card_id for log lines.
+
+    None -> 'none'. Card_id -> '****NNNN' (zero-padded to 4 digits).
+    Architecture §11: never log a full card_id at any level.
+    """
+    if card_id is None:
+        return "none"
+    return f"****{card_id % 10000:04d}"
