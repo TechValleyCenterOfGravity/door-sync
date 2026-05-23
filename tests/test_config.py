@@ -17,26 +17,6 @@ from door_sync.config import (
 from door_sync.models import SafetyThresholds, TierMapping
 
 
-def _minimal_valid_toml() -> str:
-    """Smallest valid config.toml — just enough to pass _validate_*."""
-    return (
-        "cadence_seconds = 600\n"
-        "[civicrm]\n"
-        'host = "https://civicrm.example.org"\n'
-        'card_id_field = "Door_Access.card_id"\n'
-        "[unifi]\n"
-        'host = "https://unifi.example.org:12445"\n'
-        'tls_fingerprint = "'
-        + ("AB:" * 31) + 'AB"\n'
-        "facility_code = 42\n"
-        "[safety]\n"
-        "[tier_mapping.rules.Gold]\n"
-        'resolution = "tier"\n'
-        'target_policy = "p1"\n'
-        "rank = 100\n"
-    )
-
-
 def test_civicrm_config_is_frozen() -> None:
     c = CivicrmConfig(host="https://x", api_key="k", card_id_field="G.f")
     with pytest.raises(FrozenInstanceError):
@@ -233,7 +213,7 @@ def test_missing_toml_file_raises_config_error(
 # --- validator tests ---
 
 
-def _write_minimal_valid(tmp_path: Path) -> tuple[Path, Path]:
+def _write_minimal_valid(tmp_path: Path, extra_toml: str = "") -> tuple[Path, Path]:
     cfg = tmp_path / "config.toml"
     env = tmp_path / "env"
     cfg.write_text(
@@ -245,6 +225,7 @@ def _write_minimal_valid(tmp_path: Path) -> tuple[Path, Path]:
         'host = "https://unifi.example.org"\n'
         'tls_fingerprint = "' + ("AB:" * 31 + "AB") + '"\n'
         "facility_code = 42\n"
+        + extra_toml
     )
     env.write_text("CIVICRM_API_KEY=civikey\nUNIFI_API_KEY=unifikey\n")
     return cfg, env
@@ -755,6 +736,10 @@ def test_example_files_parse(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "Day Pass" in result.tier_mapping.rules
     assert result.tier_mapping.rules["Day Pass"].resolution == "day-pass"
     assert result.tier_mapping.rules["Day Pass"].target_policy is None
+    # ops_paths — all three fields from the example file
+    assert result.ops_paths.audit_jsonl == Path("/var/log/door-sync/audit.jsonl")
+    assert result.ops_paths.state_json == Path("/var/lib/door-sync/state.json")
+    assert result.ops_paths.alert_flag == Path("/var/run/door-sync/alert.flag")
 
 
 # --- facility_code tests ---
@@ -826,10 +811,7 @@ def test_load_accepts_facility_code_boundary_values(
 
 def test_ops_paths_default_when_section_omitted(tmp_path: Path) -> None:
     """If [ops] is missing entirely, defaults from architecture §11 apply."""
-    cfg_path = tmp_path / "config.toml"
-    env_path = tmp_path / "env"
-    cfg_path.write_text(_minimal_valid_toml(), encoding="utf-8")
-    env_path.write_text("CIVICRM_API_KEY=k\nUNIFI_API_KEY=k\n", encoding="utf-8")
+    cfg_path, env_path = _write_minimal_valid(tmp_path)
 
     config = config_mod.load(config_path=cfg_path, env_path=env_path)
 
@@ -839,18 +821,15 @@ def test_ops_paths_default_when_section_omitted(tmp_path: Path) -> None:
 
 
 def test_ops_paths_explicit_values_override_defaults(tmp_path: Path) -> None:
-    cfg_path = tmp_path / "config.toml"
-    env_path = tmp_path / "env"
-    cfg_path.write_text(
-        _minimal_valid_toml() + (
+    cfg_path, env_path = _write_minimal_valid(
+        tmp_path,
+        extra_toml=(
             "\n[ops]\n"
             'audit_jsonl = "/tmp/a.jsonl"\n'
             'state_json  = "/tmp/s.json"\n'
             'alert_flag  = "/tmp/f.flag"\n'
         ),
-        encoding="utf-8",
     )
-    env_path.write_text("CIVICRM_API_KEY=k\nUNIFI_API_KEY=k\n", encoding="utf-8")
 
     config = config_mod.load(config_path=cfg_path, env_path=env_path)
 
@@ -860,16 +839,13 @@ def test_ops_paths_explicit_values_override_defaults(tmp_path: Path) -> None:
 
 
 def test_ops_paths_rejects_non_string_value(tmp_path: Path) -> None:
-    cfg_path = tmp_path / "config.toml"
-    env_path = tmp_path / "env"
-    cfg_path.write_text(
-        _minimal_valid_toml() + (
+    cfg_path, env_path = _write_minimal_valid(
+        tmp_path,
+        extra_toml=(
             "\n[ops]\n"
             "audit_jsonl = 42\n"
         ),
-        encoding="utf-8",
     )
-    env_path.write_text("CIVICRM_API_KEY=k\nUNIFI_API_KEY=k\n", encoding="utf-8")
 
     with pytest.raises(config_mod.ConfigError) as excinfo:
         config_mod.load(config_path=cfg_path, env_path=env_path)
