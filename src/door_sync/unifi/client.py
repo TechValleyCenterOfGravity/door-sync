@@ -517,8 +517,21 @@ class UnifiClient:
             token = str(row.get("token", ""))
             parsed_card_id = _parse_nfc_id(nfc_id, self._config.facility_code)
             if parsed_card_id is None:
+                # Don't include the raw nfc_id in the error — it encodes the
+                # card number (architecture §11). For FC mismatch, log only
+                # the FC byte (0-255 is not credential material). For
+                # unparseable hex, log the structural failure without the
+                # string.
+                try:
+                    bad_fc = (int(nfc_id, 16) >> 16) & 0xFF
+                    detail = (
+                        f"got FC {bad_fc}, "
+                        f"expected {self._config.facility_code}"
+                    )
+                except ValueError:
+                    detail = "nfc_id is not valid hex"
                 raise UnifiClientError(
-                    f"import returned card with wrong FC or unparseable nfc_id: {nfc_id!r}"
+                    f"import response card failed validation: {detail}"
                 )
             if not token:
                 raise UnifiClientError(

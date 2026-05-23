@@ -706,6 +706,77 @@ def test_import_cards_empty_list_is_noop(httpx_mock: HTTPXMock) -> None:
     client.close()
 
 
+def test_import_cards_fc_mismatch_in_response_does_not_leak_card_number(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """If the import response contains an nfc_id whose FC doesn't match our
+    config, the raised error mentions only the FC bytes — not the raw nfc_id
+    (which encodes the card number, architecture §11)."""
+    cert = b"fake-cert"
+    fp = hashlib.sha256(cert).hexdigest()
+    config = _unifi_config(fingerprint=fp)
+    with _patched_tls(cert):
+        client = UnifiClient(config)
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_cards_page([]),
+    )
+    httpx_mock.add_response(
+        method="POST",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/import",
+        json={
+            "code": "SUCCESS",
+            "msg": "success",
+            "data": [{"alias": "x", "nfc_id": "5904D2", "token": "tok"}],
+        },
+    )
+    with pytest.raises(UnifiClientError) as exc_info:
+        client._import_cards([1234])
+    message = str(exc_info.value)
+    # FC bytes are operational, not credential material — present.
+    assert "got FC 89" in message
+    assert f"expected {42}" in message
+    # The raw nfc_id and the card-number portion must NOT appear.
+    assert "5904D2" not in message
+    assert "1234" not in message
+    assert "04D2" not in message
+    client.close()
+
+
+def test_import_cards_unparseable_nfc_id_does_not_leak_string(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """If the import response contains a non-hex nfc_id, the error says so
+    structurally — the raw string is not included."""
+    cert = b"fake-cert"
+    fp = hashlib.sha256(cert).hexdigest()
+    config = _unifi_config(fingerprint=fp)
+    with _patched_tls(cert):
+        client = UnifiClient(config)
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_cards_page([]),
+    )
+    httpx_mock.add_response(
+        method="POST",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/import",
+        json={
+            "code": "SUCCESS",
+            "msg": "success",
+            "data": [{"alias": "x", "nfc_id": "garbage-not-hex", "token": "tok"}],
+        },
+    )
+    with pytest.raises(UnifiClientError) as exc_info:
+        client._import_cards([1234])
+    message = str(exc_info.value)
+    assert "not valid hex" in message
+    # Raw string must not appear.
+    assert "garbage-not-hex" not in message
+    client.close()
+
+
 # --- apply: live writes ---
 
 
