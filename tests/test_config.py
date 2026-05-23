@@ -617,6 +617,7 @@ def test_load_collects_multiple_issues(
     assert "unifi.tls_fingerprint" in paths
     assert "CIVICRM_API_KEY" in paths
     assert "UNIFI_API_KEY" in paths
+    assert "unifi.facility_code" in paths
 
 
 # --- env precedence tests ---
@@ -782,3 +783,16 @@ def test_load_rejects_invalid_facility_code(
         i.path == "unifi.facility_code" and reason in i.message
         for i in exc_info.value.issues
     ), [i for i in exc_info.value.issues]
+
+
+@pytest.mark.parametrize("code", [0, 255])
+def test_load_accepts_facility_code_boundary_values(
+    tmp_path: Path, code: int
+) -> None:
+    """Range check is inclusive on both ends: 0 and 255 are valid."""
+    config_path, env_path = _write_minimal_valid(tmp_path)
+    content = config_path.read_text()
+    content = content.replace("facility_code = 42", f"facility_code = {code}")
+    config_path.write_text(content)
+    result = load(config_path=config_path, env_path=env_path)
+    assert result.unifi.facility_code == code
