@@ -23,7 +23,7 @@ from typing import Any
 import httpx
 
 from door_sync.config import UnifiConfig
-from door_sync.models import Diff, UnifiUser
+from door_sync.models import Diff, ResolvedMember, UnifiUser
 
 _UNIFI_PORT = 12445
 _MAX_ATTEMPTS = 3
@@ -261,25 +261,17 @@ class UnifiClient:
         if self._dry_run:
             self._log_dry_run_actions(diff)
             return
+        self._preimport_unknown_cards(diff)
         self._apply_deactivate(diff)
         self._apply_update_credential(diff)
         self._apply_update_policy(diff)
-        # to_add implemented in next task.
+        self._apply_add(diff)
 
     _INTER_CALL_DELAY_SECONDS = 0.075
 
     def _apply_update_credential(self, diff: Diff) -> None:
         if not diff.to_update_credential:
             return
-        # Pre-import any new cards in one batch.
-        token_map = self._ensure_nfc_token_map()
-        new_cards = [
-            resolved.card_id
-            for resolved, _ in diff.to_update_credential
-            if resolved.card_id is not None and resolved.card_id not in token_map
-        ]
-        if new_cards:
-            self._import_cards(new_cards)
 
         for resolved, unifi_user in diff.to_update_credential:
             user_id = self._unifi_user_id_by_contact.get(resolved.contact_id)
@@ -395,6 +387,23 @@ class UnifiClient:
                 _redact(unifi_user.card_id),
             )
 
+    def _preimport_unknown_cards(self, diff: Diff) -> None:
+        """Batch-import any card_ids needed by to_add or to_update_credential
+        that aren't already in the token map.
+        """
+        if not diff.to_add and not diff.to_update_credential:
+            return
+        token_map = self._ensure_nfc_token_map()
+        needed: set[int] = set()
+        for resolved in diff.to_add:
+            if resolved.card_id is not None and resolved.card_id not in token_map:
+                needed.add(resolved.card_id)
+        for resolved, _unifi_user in diff.to_update_credential:
+            if resolved.card_id is not None and resolved.card_id not in token_map:
+                needed.add(resolved.card_id)
+        if needed:
+            self._import_cards(sorted(needed))
+
     def _ensure_nfc_token_map(self) -> dict[int, str]:
         if self._nfc_token_map is not None:
             return self._nfc_token_map
@@ -470,6 +479,105 @@ class UnifiClient:
                     f"card import failed for card_id={_redact(parsed_card_id)} (empty token in response)"
                 )
             token_map[parsed_card_id] = token
+
+    def _apply_add(self, diff: Diff) -> None:
+        for resolved in diff.to_add:
+            existing_user_id = self._unifi_user_id_by_contact.get(resolved.contact_id)
+            first, last = _split_name(resolved.display_name)
+            if existing_user_id is not None:
+                # Reactivate path
+                self._reactivate_existing(resolved, existing_user_id, first, last)
+            else:
+                # True create
+                user_id = self._create_user(resolved, first, last)
+                self._unifi_user_id_by_contact[resolved.contact_id] = user_id
+            # Common tail: bind card + assign policy.
+            current_user_id = self._unifi_user_id_by_contact[resolved.contact_id]
+            self._bind_card_if_set(current_user_id, resolved)
+            self._assign_policy_if_set(current_user_id, resolved)
+
+    def _reactivate_existing(
+        self,
+        resolved: ResolvedMember,
+        user_id: str,
+        first: str,
+        last: str,
+    ) -> None:
+        self._request(
+            "PUT",
+            f"/api/v1/developer/users/{user_id}",
+            json={
+                "first_name": first,
+                "last_name": last,
+                "employee_number": str(resolved.contact_id),
+                "status": "ACTIVE",
+            },
+        )
+        time.sleep(self._INTER_CALL_DELAY_SECONDS)
+        # Delete any old cards that differ from the new card_id.
+        cached_cards = self._nfc_cards_by_contact.get(resolved.contact_id, [])
+        new_token = (
+            self._ensure_nfc_token_map().get(resolved.card_id)
+            if resolved.card_id is not None
+            else None
+        )
+        for old_card in cached_cards:
+            old_token = str(old_card.get("token", ""))
+            if not old_token or old_token == new_token:
+                continue
+            self._request(
+                "DELETE",
+                f"/api/v1/developer/users/{user_id}/nfc_cards/delete",
+                json={"token": old_token},
+            )
+            time.sleep(self._INTER_CALL_DELAY_SECONDS)
+
+    def _create_user(
+        self, resolved: ResolvedMember, first: str, last: str
+    ) -> str:
+        data = self._request(
+            "POST",
+            "/api/v1/developer/users",
+            json={
+                "first_name": first,
+                "last_name": last,
+                "employee_number": str(resolved.contact_id),
+            },
+        )
+        time.sleep(self._INTER_CALL_DELAY_SECONDS)
+        if not isinstance(data, dict) or "id" not in data:
+            raise UnifiClientError(
+                f"POST /users returned no id for contact={resolved.contact_id}"
+            )
+        return str(data["id"])
+
+    def _bind_card_if_set(self, user_id: str, resolved: ResolvedMember) -> None:
+        if resolved.card_id is None:
+            return
+        token = self._ensure_nfc_token_map().get(resolved.card_id)
+        if token is None:
+            raise UnifiClientError(
+                f"no token for card_id={_redact(resolved.card_id)} "
+                f"after import (contact={resolved.contact_id})"
+            )
+        self._request(
+            "PUT",
+            f"/api/v1/developer/users/{user_id}/nfc_cards",
+            json={"token": token, "force_add": False},
+        )
+        time.sleep(self._INTER_CALL_DELAY_SECONDS)
+
+    def _assign_policy_if_set(
+        self, user_id: str, resolved: ResolvedMember
+    ) -> None:
+        if resolved.target_policy is None:
+            return
+        self._request(
+            "PUT",
+            f"/api/v1/developer/users/{user_id}/access_policies",
+            json={"access_policy_ids": [resolved.target_policy]},
+        )
+        time.sleep(self._INTER_CALL_DELAY_SECONDS)
 
     def close(self) -> None:
         # httpx.Client may not exist if __init__ failed before constructing it.

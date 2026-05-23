@@ -870,3 +870,210 @@ def test_apply_update_policy_replaces(
     put_req = httpx_mock.get_requests()[-1]
     assert _json.loads(put_req.content) == {"access_policy_ids": ["pol-new"]}
     client.close()
+
+
+def test_apply_create_new_user_path(
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """to_add for unknown contact_id: POST /users, then bind card + assign policy."""
+    monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
+    cert = b"fake-cert"
+    fp = hashlib.sha256(cert).hexdigest()
+    config = _unifi_config(fingerprint=fp)
+    with _patched_tls(cert):
+        client = UnifiClient(config)
+
+    # Empty initial fetch.
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page([], total=0),
+    )
+    client.fetch_users()
+
+    # Token-map fetch.
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_cards_page([]),
+    )
+    # Import new card.
+    httpx_mock.add_response(
+        method="POST",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/import",
+        json={
+            "code": "SUCCESS",
+            "msg": "success",
+            "data": [{"alias": "sync-01234", "nfc_id": "2A04D2", "token": "tok-1234"}],
+        },
+    )
+    # POST /users → returns the new user_id.
+    httpx_mock.add_response(
+        method="POST",
+        url="https://192.0.2.1:12445/api/v1/developer/users",
+        json={
+            "code": "SUCCESS", "msg": "success",
+            "data": {"id": "uuid-new", "first_name": "Jane", "last_name": "Doe"},
+        },
+    )
+    # PUT bind card.
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-new/nfc_cards",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+    # PUT assign policy.
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-new/access_policies",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+
+    resolved = ResolvedMember(
+        contact_id=42, display_name="Jane Doe", card_id=1234,
+        target_policy="pol-1", resolution="tier",
+    )
+    client.apply(_diff(to_add=[resolved]))
+
+    post_user = next(
+        r for r in httpx_mock.get_requests()
+        if r.method == "POST" and r.url.path == "/api/v1/developer/users"
+    )
+    body = _json.loads(post_user.content)
+    assert body == {"first_name": "Jane", "last_name": "Doe", "employee_number": "42"}
+    client.close()
+
+
+def test_apply_reactivate_inactive_user_path(
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """to_add for cached-inactive contact, same card: PUT ACTIVE, bind, assign — no DELETE."""
+    monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
+    cert = b"fake-cert"
+    fp = hashlib.sha256(cert).hexdigest()
+    config = _unifi_config(fingerprint=fp)
+    with _patched_tls(cert):
+        client = UnifiClient(config)
+
+    # Fetch returns user 42 inactive with the same card.
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page([_user_row(
+            contact_id=42, user_id="uuid-42",
+            status="DEACTIVATED", nfc_id="2A04D2", nfc_token="tok-1234",
+        )]),
+    )
+    client.fetch_users()
+
+    # Token-map fetch (card already known).
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_cards_page([{"nfc_id": "2A04D2", "token": "tok-1234"}]),
+    )
+    # PUT reactivate.
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+    # PUT bind card.
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42/nfc_cards",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+    # PUT assign policy.
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42/access_policies",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+
+    resolved = _resolved(contact_id=42, card_id=1234)
+    client.apply(_diff(to_add=[resolved]))
+
+    # No DELETE calls.
+    delete_calls = [r for r in httpx_mock.get_requests() if r.method == "DELETE"]
+    assert delete_calls == []
+    client.close()
+
+
+def test_apply_reactivate_swaps_card_when_changed(
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """to_add for cached-inactive with different card_id: activate, DELETE old, bind new."""
+    monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
+    cert = b"fake-cert"
+    fp = hashlib.sha256(cert).hexdigest()
+    config = _unifi_config(fingerprint=fp)
+    with _patched_tls(cert):
+        client = UnifiClient(config)
+
+    # Fetch: inactive user with OLD card_id=1234.
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page([_user_row(
+            contact_id=42, user_id="uuid-42",
+            status="DEACTIVATED", nfc_id="2A04D2", nfc_token="tok-1234",
+        )]),
+    )
+    client.fetch_users()
+
+    # Token-map: old card known, new one not.
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_cards_page([{"nfc_id": "2A04D2", "token": "tok-1234"}]),
+    )
+    # Import for new card 1235.
+    httpx_mock.add_response(
+        method="POST",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/import",
+        json={
+            "code": "SUCCESS", "msg": "success",
+            "data": [{"alias": "sync-01235", "nfc_id": "2A04D3", "token": "tok-1235"}],
+        },
+    )
+    # PUT reactivate.
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+    # DELETE old card.
+    httpx_mock.add_response(
+        method="DELETE",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42/nfc_cards/delete",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+    # PUT bind new.
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42/nfc_cards",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+    # PUT assign policy.
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42/access_policies",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+
+    resolved = _resolved(contact_id=42, card_id=1235)
+    client.apply(_diff(to_add=[resolved]))
+
+    # Confirm sequence: PUT user (reactivate) → DELETE old → PUT new card → PUT policy.
+    methods_paths = [
+        (r.method, r.url.path) for r in httpx_mock.get_requests()
+        if r.url.path.startswith("/api/v1/developer/users/uuid-42")
+    ]
+    assert methods_paths == [
+        ("PUT", "/api/v1/developer/users/uuid-42"),
+        ("DELETE", "/api/v1/developer/users/uuid-42/nfc_cards/delete"),
+        ("PUT", "/api/v1/developer/users/uuid-42/nfc_cards"),
+        ("PUT", "/api/v1/developer/users/uuid-42/access_policies"),
+    ]
+    client.close()
