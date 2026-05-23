@@ -394,6 +394,33 @@ def test_fetch_users_skips_non_int_employee_number(
     client.close()
 
 
+def test_fetch_users_skips_non_positive_employee_number(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """employee_number "0" or negative is not a CiviCRM contact_id (auto-increment
+    starts at 1). Skipping prevents such a user from being silently deactivated
+    on the next cycle: with no matching ResolvedMember, the reconciler's diff
+    would put them in to_deactivate.
+    """
+    rows = [
+        _user_row(contact_id=42),
+        {**_user_row(contact_id=42), "id": "uuid-zero", "employee_number": "0"},
+        {**_user_row(contact_id=42), "id": "uuid-neg", "employee_number": "-5"},
+    ]
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page(rows),
+    )
+    client = _make_client()
+    users = client.fetch_users()
+    assert {u.contact_id for u in users} == {42}
+    # And the caches must not have been populated with the bad contact_ids.
+    assert 0 not in client._unifi_user_id_by_contact
+    assert -5 not in client._unifi_user_id_by_contact
+    client.close()
+
+
 def test_fetch_users_logs_warning_on_multiple_cards(
     httpx_mock: HTTPXMock, caplog: pytest.LogCaptureFixture
 ) -> None:

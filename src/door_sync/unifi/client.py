@@ -208,6 +208,13 @@ class UnifiClient:
             contact_id = int(emp_raw)
         except (ValueError, TypeError):
             return None
+        # CiviCRM contact_ids are positive integers (auto-increment from 1).
+        # A UniFi user with employee_number "0" or negative was not provisioned
+        # by this reconciler; treat it as admin-managed and skip. Without this
+        # guard, such a user would land in to_deactivate on every cycle since
+        # no ResolvedMember will ever match.
+        if contact_id <= 0:
+            return None
         user_id = str(row.get("id", ""))
         if not user_id:
             return None
