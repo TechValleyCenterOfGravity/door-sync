@@ -75,6 +75,10 @@ class UnifiClient:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
+        # Defense in depth: even with fingerprint pinning, refuse to negotiate
+        # TLS 1.0 / 1.1. Modern Python+OpenSSL defaults are already 1.2+, but
+        # setting this explicitly silences CodeQL and guards older builds.
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         with socket.create_connection(
             (hostname, port), timeout=10
         ) as raw:
