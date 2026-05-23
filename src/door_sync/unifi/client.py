@@ -19,6 +19,7 @@ import time
 from collections.abc import Callable
 from types import TracebackType
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -50,7 +51,7 @@ class UnifiClient:
         self._dry_run = dry_run
         self._verify_tls_fingerprint()
         self._http = httpx.Client(
-            base_url=f"https://{config.host}:{_UNIFI_PORT}",
+            base_url=config.host,
             timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0),
             verify=False,
             headers={"Authorization": f"Bearer {config.api_key}"},
@@ -61,13 +62,16 @@ class UnifiClient:
         self._fetched_users_done = False
 
     def _verify_tls_fingerprint(self) -> None:
+        parsed = urlsplit(self._config.host)
+        hostname = parsed.hostname or self._config.host  # fallback if no scheme
+        port = parsed.port or _UNIFI_PORT
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
         with socket.create_connection(
-            (self._config.host, _UNIFI_PORT), timeout=10
+            (hostname, port), timeout=10
         ) as raw:
-            with ctx.wrap_socket(raw, server_hostname=self._config.host) as wrapped:
+            with ctx.wrap_socket(raw, server_hostname=hostname) as wrapped:
                 cert_der = wrapped.getpeercert(binary_form=True)
         if cert_der is None:
             raise UnifiClientError("TLS handshake produced no peer certificate")
@@ -362,6 +366,18 @@ class UnifiClient:
             time.sleep(self._INTER_CALL_DELAY_SECONDS)
 
     def _log_dry_run_actions(self, diff: Diff) -> None:
+        # Emit would-import lines for cards not yet in the token map.
+        token_map = self._nfc_token_map or {}
+        needed: set[int] = set()
+        for resolved in diff.to_add:
+            if resolved.card_id is not None and resolved.card_id not in token_map:
+                needed.add(resolved.card_id)
+        for resolved, _ in diff.to_update_credential:
+            if resolved.card_id is not None and resolved.card_id not in token_map:
+                needed.add(resolved.card_id)
+        for card_id in sorted(needed):
+            logger.info("would-import card=%s", _redact(card_id))
+
         for member in diff.to_add:
             logger.info(
                 "would-add contact=%d card=%s policy=%s",
@@ -444,8 +460,7 @@ class UnifiClient:
                 card_id = _parse_nfc_id(nfc_id, self._config.facility_code)
                 if card_id is None:
                     logger.debug(
-                        "skipping foreign-FC or unparseable card nfc_id=%s",
-                        nfc_id,
+                        "skipping foreign-FC or unparseable card",
                     )
                     continue
                 token_map[card_id] = token

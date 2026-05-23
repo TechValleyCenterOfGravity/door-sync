@@ -3,6 +3,7 @@
 import hashlib
 import json as _json
 import logging
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -105,7 +106,7 @@ def test_redact_strips_high_digits() -> None:
 
 def _unifi_config(fingerprint: str = "AA" * 32) -> UnifiConfig:
     return UnifiConfig(
-        host="192.0.2.1",
+        host="https://192.0.2.1:12445",
         api_key="testkey",
         tls_fingerprint=fingerprint,
         facility_code=42,
@@ -1297,4 +1298,74 @@ def test_apply_inter_call_delay_invoked(
     client.apply(_diff(to_deactivate=[fetched[0]]))
     # One write → one sleep of 0.075.
     assert sleeps == [0.075]
+    client.close()
+
+
+def test_unifi_client_constructs_from_loaded_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Loading the example config and instantiating UnifiClient must
+    produce a client whose base_url and TLS-verify hostname are sensible.
+
+    This catches the regression where config.host was validated as a full URL
+    but the client was treating it as a bare hostname.
+    """
+    from dataclasses import replace
+
+    from door_sync.config import load
+
+    repo_root = Path(__file__).parent.parent
+
+    env_path = tmp_path / "env"
+    env_path.write_text("CIVICRM_API_KEY=test\nUNIFI_API_KEY=test\n")
+    config = load(config_path=repo_root / "config.example.toml", env_path=env_path)
+
+    # Stub TLS verification — we only care about whether the URL gets parsed
+    # without producing absurd shapes.
+    cert = b"fake-cert"
+    fp = hashlib.sha256(cert).hexdigest()
+    # Patch the fingerprint in the loaded config (frozen dataclass — make a copy).
+    config_unifi = replace(config.unifi, tls_fingerprint=fp)
+
+    with _patched_tls(cert):
+        client = UnifiClient(config_unifi)
+    # base_url must NOT have https:// doubled.
+    assert str(client._http.base_url).count("https://") == 1
+    # And it must be a valid URL.
+    assert "://" in str(client._http.base_url)
+    client.close()
+
+
+def test_apply_dry_run_logs_would_import_for_unknown_cards(
+    httpx_mock: HTTPXMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Dry-run report includes a would-import line for cards not in the token map."""
+    cert = b"fake-cert"
+    fp = hashlib.sha256(cert).hexdigest()
+    config = _unifi_config(fingerprint=fp)
+    with _patched_tls(cert):
+        client = UnifiClient(config, dry_run=True)
+
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page([], total=0),
+    )
+    client.fetch_users()
+
+    # Token map: 9998 is known, 9999 is unknown.
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_cards_page([{"nfc_id": _compute_nfc_id(42, 9998), "token": "tok-9998"}]),
+    )
+
+    diff = _diff(to_add=[_resolved(1, card_id=9998), _resolved(2, card_id=9999)])
+    with caplog.at_level(logging.INFO, logger="door_sync.unifi.client"):
+        client.apply(diff)
+
+    messages = [r.message for r in caplog.records]
+    # Only card 9999 should produce a would-import line (9998 is already known).
+    assert any("would-import" in m and "****9999" in m for m in messages)
+    assert not any("would-import" in m and "****9998" in m for m in messages)
     client.close()
