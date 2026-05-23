@@ -1,6 +1,7 @@
 """Tests for the UniFi Access client."""
 
 import hashlib
+import json as _json
 import logging
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -664,4 +665,41 @@ def test_import_cards_empty_list_is_noop(httpx_mock: HTTPXMock) -> None:
         client = UnifiClient(config)
     client._import_cards([])
     assert len(httpx_mock.get_requests()) == 0
+    client.close()
+
+
+# --- apply: live writes ---
+
+
+def test_apply_deactivate_sets_status(
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """to_deactivate → PUT /users/:id with status=DEACTIVATED."""
+    monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
+
+    cert = b"fake-cert"
+    fp = hashlib.sha256(cert).hexdigest()
+    config = _unifi_config(fingerprint=fp)
+    with _patched_tls(cert):
+        client = UnifiClient(config)
+
+    # Prime the cache via fetch_users.
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page([_user_row(contact_id=42, user_id="uuid-42")]),
+    )
+    fetched = client.fetch_users()
+
+    # The deactivate write.
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+    client.apply(_diff(to_deactivate=[fetched[0]]))
+
+    write_req = httpx_mock.get_requests()[-1]
+    body = _json.loads(write_req.content)
+    assert body == {"status": "DEACTIVATED"}
     client.close()

@@ -261,10 +261,26 @@ class UnifiClient:
         if self._dry_run:
             self._log_dry_run_actions(diff)
             return
-        # Live writes — implemented in Tasks 8-12.
-        raise UnifiClientError(
-            "live apply() not yet implemented (this branch should be unreachable)"
-        )
+        self._apply_deactivate(diff)
+        # Other buckets implemented in subsequent tasks.
+
+    _INTER_CALL_DELAY_SECONDS = 0.075
+
+    def _apply_deactivate(self, diff: Diff) -> None:
+        for unifi_user in diff.to_deactivate:
+            user_id = self._unifi_user_id_by_contact.get(unifi_user.contact_id)
+            if user_id is None:
+                logger.warning(
+                    "skipping deactivate for contact=%d: no cached user_id",
+                    unifi_user.contact_id,
+                )
+                continue
+            self._request(
+                "PUT",
+                f"/api/v1/developer/users/{user_id}",
+                json={"status": "DEACTIVATED"},
+            )
+            time.sleep(self._INTER_CALL_DELAY_SECONDS)
 
     def _log_dry_run_actions(self, diff: Diff) -> None:
         for member in diff.to_add:
