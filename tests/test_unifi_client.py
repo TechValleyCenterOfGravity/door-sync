@@ -505,6 +505,14 @@ def test_apply_dry_run_makes_no_writes(
     )
     client.fetch_users()
 
+    # In dry-run the token-map read path is exercised when the diff has cards
+    # (spec §8). Register the response so httpx_mock doesn't error.
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_cards_page([]),
+    )
+
     diff = _diff(
         to_add=[_resolved(1)],
         to_deactivate=[_unifi_user(2)],
@@ -512,8 +520,10 @@ def test_apply_dry_run_makes_no_writes(
     with caplog.at_level(logging.INFO, logger="door_sync.unifi.client"):
         client.apply(diff)
 
-    # Only the one fetch_users GET should have been issued — no writes.
-    assert len(httpx_mock.get_requests()) == 1
+    # fetch_users GET + token-map GET; NO writes (PUT/POST/DELETE).
+    all_requests = httpx_mock.get_requests()
+    write_requests = [r for r in all_requests if r.method in ("PUT", "POST", "DELETE")]
+    assert write_requests == []
     # Two log lines: would-add and would-deactivate.
     messages = [r.message for r in caplog.records]
     assert any("would-add" in m for m in messages)
@@ -1157,6 +1167,103 @@ def test_apply_executes_deactivate_update_credential_update_policy_add_order(
         ("PUT", "/api/v1/developer/users/u101/nfc_cards"),
         ("PUT", "/api/v1/developer/users/u102/access_policies"),
     ]
+    client.close()
+
+
+def test_fetch_users_warning_does_not_leak_card_id(
+    httpx_mock: HTTPXMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The multi-card warning must not log full card_ids (architecture §11)."""
+    row = _user_row(contact_id=42)
+    # Two cards with distinct nfc_ids — both decode to card_ids under FC=42.
+    row["nfc_cards"] = [
+        {"id": "100001", "nfc_id": "2A04D2", "token": "tok-1"},  # CN=1234
+        {"id": "100002", "nfc_id": "2A04D3", "token": "tok-2"},  # CN=1235
+    ]
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page([row]),
+    )
+    with caplog.at_level(logging.WARNING, logger="door_sync.unifi.client"):
+        client = _make_client()
+        client.fetch_users()
+
+    # The warning message must not contain the raw card numbers.
+    for rec in caplog.records:
+        assert "1234" not in rec.message
+        assert "1235" not in rec.message
+    client.close()
+
+
+def test_apply_dry_run_still_fetches_token_map_when_diff_has_cards(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Dry-run with card-bearing diff must still issue the token-map GET
+    so a dry-run report reflects which cards would need import (spec §8)."""
+    cert = b"fake-cert"
+    fp = hashlib.sha256(cert).hexdigest()
+    config = _unifi_config(fingerprint=fp)
+    with _patched_tls(cert):
+        client = UnifiClient(config, dry_run=True)
+
+    # Empty fetch_users.
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page([], total=0),
+    )
+    client.fetch_users()
+
+    # Token-map fetch — must be issued in dry-run when the diff has cards.
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_cards_page([]),
+    )
+
+    client.apply(_diff(to_add=[_resolved(99, card_id=9999)]))
+
+    # The token-map endpoint MUST have been called.
+    token_calls = [
+        r for r in httpx_mock.get_requests()
+        if "/credentials/nfc_cards/tokens" in str(r.url)
+    ]
+    assert len(token_calls) == 1
+    # No import POST (writes are suppressed in dry-run).
+    import_calls = [
+        r for r in httpx_mock.get_requests()
+        if "/credentials/nfc_cards/import" in str(r.url)
+    ]
+    assert import_calls == []
+    client.close()
+
+
+def test_apply_dry_run_no_token_map_when_diff_has_no_cards(
+    httpx_mock: HTTPXMock,
+) -> None:
+    """Dry-run with cardless diff (deactivate only) skips the token-map fetch."""
+    cert = b"fake-cert"
+    fp = hashlib.sha256(cert).hexdigest()
+    config = _unifi_config(fingerprint=fp)
+    with _patched_tls(cert):
+        client = UnifiClient(config, dry_run=True)
+
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page([_user_row(contact_id=42, user_id="uuid-42")]),
+    )
+    fetched = client.fetch_users()
+
+    client.apply(_diff(to_deactivate=[fetched[0]]))
+
+    # Only the fetch_users GET, no token-map fetch.
+    token_calls = [
+        r for r in httpx_mock.get_requests()
+        if "/credentials/nfc_cards/tokens" in str(r.url)
+    ]
+    assert token_calls == []
     client.close()
 
 

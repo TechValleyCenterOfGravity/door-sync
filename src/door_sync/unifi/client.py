@@ -259,6 +259,9 @@ class UnifiClient:
                 "apply() requires a prior fetch_users() call on the same instance"
             )
         if self._dry_run:
+            # Even in dry-run, exercise the read paths so a dry-run report
+            # reflects which cards would need to be imported (spec §8).
+            self._populate_token_map_for_dry_run(diff)
             self._log_dry_run_actions(diff)
             return
         self._preimport_unknown_cards(diff)
@@ -386,6 +389,20 @@ class UnifiClient:
                 unifi_user.contact_id,
                 _redact(unifi_user.card_id),
             )
+
+    def _populate_token_map_for_dry_run(self, diff: Diff) -> None:
+        """Fetch the token map if the diff has any card-bearing entries.
+
+        Mirrors what _preimport_unknown_cards does up to the token-map fetch,
+        but skips the actual import POST (writes are suppressed in dry-run).
+        """
+        any_card = any(
+            r.card_id is not None for r in diff.to_add
+        ) or any(
+            r.card_id is not None for r, _ in diff.to_update_credential
+        )
+        if any_card:
+            self._ensure_nfc_token_map()
 
     def _preimport_unknown_cards(self, diff: Diff) -> None:
         """Batch-import any card_ids needed by to_add or to_update_credential
