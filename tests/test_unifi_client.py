@@ -703,3 +703,138 @@ def test_apply_deactivate_sets_status(
     body = _json.loads(write_req.content)
     assert body == {"status": "DEACTIVATED"}
     client.close()
+
+
+def test_apply_update_credential_swaps_card(
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """to_update_credential with changed card_id: DELETE old, PUT new."""
+    monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
+
+    cert = b"fake-cert"
+    fp = hashlib.sha256(cert).hexdigest()
+    config = _unifi_config(fingerprint=fp)
+    with _patched_tls(cert):
+        client = UnifiClient(config)
+
+    # Fetch returns user 42 with old card_id=1234 (nfc_id=2A04D2, token=tok-1234).
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page([_user_row(
+            contact_id=42, user_id="uuid-42", nfc_id="2A04D2", nfc_token="tok-1234",
+        )]),
+    )
+    fetched = client.fetch_users()
+
+    # Token map fetch (the new card is not yet in the map).
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_cards_page([
+            {"nfc_id": "2A04D2", "token": "tok-1234"},
+        ]),
+    )
+    # Import for the new card 1235.
+    httpx_mock.add_response(
+        method="POST",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/import",
+        json={
+            "code": "SUCCESS",
+            "msg": "success",
+            "data": [{"alias": "sync-01235", "nfc_id": "2A04D3", "token": "tok-1235"}],
+        },
+    )
+    # PUT name update (_resolved gives "Member 42"; fetched user is "Jane Doe").
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+    # DELETE old card.
+    httpx_mock.add_response(
+        method="DELETE",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42/nfc_cards/delete",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+    # PUT new card.
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42/nfc_cards",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+
+    resolved = _resolved(contact_id=42, card_id=1235)
+    diff = _diff(to_update_credential=[(resolved, fetched[0])])
+    client.apply(diff)
+
+    # Verify the DELETE body referenced the OLD token.
+    delete_req = next(
+        r for r in httpx_mock.get_requests()
+        if r.method == "DELETE" and r.url.path.endswith("/nfc_cards/delete")
+    )
+    assert _json.loads(delete_req.content) == {"token": "tok-1234"}
+    # And the PUT body referenced the NEW token.
+    bind_req = next(
+        r for r in httpx_mock.get_requests()
+        if r.method == "PUT" and r.url.path.endswith("/nfc_cards")
+    )
+    assert _json.loads(bind_req.content) == {"token": "tok-1235", "force_add": False}
+    client.close()
+
+
+def test_apply_update_credential_name_only(
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """display_name changes but card_id doesn't: only PUT name, no card calls."""
+    monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
+    cert = b"fake-cert"
+    fp = hashlib.sha256(cert).hexdigest()
+    config = _unifi_config(fingerprint=fp)
+    with _patched_tls(cert):
+        client = UnifiClient(config)
+
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page([_user_row(
+            contact_id=42, user_id="uuid-42",
+            first_name="Old", last_name="Name", nfc_id="2A04D2",
+        )]),
+    )
+    fetched = client.fetch_users()
+
+    # Token-map fetch (matching card, no import needed).
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_cards_page([{"nfc_id": "2A04D2", "token": "tok-1234"}]),
+    )
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+
+    resolved = ResolvedMember(
+        contact_id=42,
+        display_name="New Name",
+        card_id=1234,  # same as fetched
+        target_policy="pol-1",
+        resolution="tier",
+    )
+    diff = _diff(to_update_credential=[(resolved, fetched[0])])
+    client.apply(diff)
+
+    put_req = httpx_mock.get_requests()[-1]
+    body = _json.loads(put_req.content)
+    assert body == {"first_name": "New", "last_name": "Name"}
+    # The token-map fetch IS to /credentials/nfc_cards/tokens — that counts.
+    # But there should be NO calls to /users/uuid-42/nfc_cards or /import.
+    user_nfc_calls = [
+        r for r in httpx_mock.get_requests()
+        if "/users/uuid-42/nfc_cards" in str(r.url)
+        or "/nfc_cards/import" in str(r.url)
+    ]
+    assert user_nfc_calls == []
+    client.close()

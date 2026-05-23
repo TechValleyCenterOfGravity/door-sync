@@ -262,9 +262,70 @@ class UnifiClient:
             self._log_dry_run_actions(diff)
             return
         self._apply_deactivate(diff)
+        self._apply_update_credential(diff)
         # Other buckets implemented in subsequent tasks.
 
     _INTER_CALL_DELAY_SECONDS = 0.075
+
+    def _apply_update_credential(self, diff: Diff) -> None:
+        if not diff.to_update_credential:
+            return
+        # Pre-import any new cards in one batch.
+        token_map = self._ensure_nfc_token_map()
+        new_cards = [
+            resolved.card_id
+            for resolved, _ in diff.to_update_credential
+            if resolved.card_id is not None and resolved.card_id not in token_map
+        ]
+        if new_cards:
+            self._import_cards(new_cards)
+
+        for resolved, unifi_user in diff.to_update_credential:
+            user_id = self._unifi_user_id_by_contact.get(resolved.contact_id)
+            if user_id is None:
+                logger.warning(
+                    "skipping update_credential for contact=%d: no cached user_id",
+                    resolved.contact_id,
+                )
+                continue
+
+            if resolved.display_name != unifi_user.display_name:
+                first, last = _split_name(resolved.display_name)
+                self._request(
+                    "PUT",
+                    f"/api/v1/developer/users/{user_id}",
+                    json={"first_name": first, "last_name": last},
+                )
+                time.sleep(self._INTER_CALL_DELAY_SECONDS)
+
+            if resolved.card_id != unifi_user.card_id:
+                # Delete old card(s) on the user.
+                for old_card in self._nfc_cards_by_contact.get(
+                    resolved.contact_id, []
+                ):
+                    old_token = str(old_card.get("token", ""))
+                    if not old_token:
+                        continue
+                    self._request(
+                        "DELETE",
+                        f"/api/v1/developer/users/{user_id}/nfc_cards/delete",
+                        json={"token": old_token},
+                    )
+                    time.sleep(self._INTER_CALL_DELAY_SECONDS)
+                # Bind new card if specified.
+                if resolved.card_id is not None:
+                    new_token = self._ensure_nfc_token_map().get(resolved.card_id)
+                    if new_token is None:
+                        raise UnifiClientError(
+                            f"no token for card_id={_redact(resolved.card_id)} "
+                            f"after import (contact={resolved.contact_id})"
+                        )
+                    self._request(
+                        "PUT",
+                        f"/api/v1/developer/users/{user_id}/nfc_cards",
+                        json={"token": new_token, "force_add": False},
+                    )
+                    time.sleep(self._INTER_CALL_DELAY_SECONDS)
 
     def _apply_deactivate(self, diff: Diff) -> None:
         for unifi_user in diff.to_deactivate:
