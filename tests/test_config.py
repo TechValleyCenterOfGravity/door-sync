@@ -3,7 +3,9 @@ from pathlib import Path
 
 import pytest
 
+import door_sync.config as config_mod
 from door_sync.config import (
+    _DEFAULT_OPS_PATHS,
     CivicrmConfig,
     Config,
     ConfigError,
@@ -13,6 +15,26 @@ from door_sync.config import (
     load,
 )
 from door_sync.models import SafetyThresholds, TierMapping
+
+
+def _minimal_valid_toml() -> str:
+    """Smallest valid config.toml — just enough to pass _validate_*."""
+    return (
+        "cadence_seconds = 600\n"
+        "[civicrm]\n"
+        'host = "https://civicrm.example.org"\n'
+        'card_id_field = "Door_Access.card_id"\n'
+        "[unifi]\n"
+        'host = "https://unifi.example.org:12445"\n'
+        'tls_fingerprint = "'
+        + ("AB:" * 31) + 'AB"\n'
+        "facility_code = 42\n"
+        "[safety]\n"
+        "[tier_mapping.rules.Gold]\n"
+        'resolution = "tier"\n'
+        'target_policy = "p1"\n'
+        "rank = 100\n"
+    )
 
 
 def test_civicrm_config_is_frozen() -> None:
@@ -34,6 +56,7 @@ def test_config_is_frozen() -> None:
         unifi=UnifiConfig(host="https://y", api_key="k", tls_fingerprint="AB" * 32, facility_code=0),
         safety=SafetyThresholds(),
         tier_mapping=TierMapping(rules={}),
+        ops_paths=_DEFAULT_OPS_PATHS,
     )
     with pytest.raises(FrozenInstanceError):
         c.cadence_seconds = 60  # type: ignore[misc]
@@ -796,3 +819,60 @@ def test_load_accepts_facility_code_boundary_values(
     config_path.write_text(content)
     result = load(config_path=config_path, env_path=env_path)
     assert result.unifi.facility_code == code
+
+
+# --- ops_paths tests ---
+
+
+def test_ops_paths_default_when_section_omitted(tmp_path: Path) -> None:
+    """If [ops] is missing entirely, defaults from architecture §11 apply."""
+    cfg_path = tmp_path / "config.toml"
+    env_path = tmp_path / "env"
+    cfg_path.write_text(_minimal_valid_toml(), encoding="utf-8")
+    env_path.write_text("CIVICRM_API_KEY=k\nUNIFI_API_KEY=k\n", encoding="utf-8")
+
+    config = config_mod.load(config_path=cfg_path, env_path=env_path)
+
+    assert config.ops_paths.audit_jsonl == Path("/var/log/door-sync/audit.jsonl")
+    assert config.ops_paths.state_json == Path("/var/lib/door-sync/state.json")
+    assert config.ops_paths.alert_flag == Path("/var/run/door-sync/alert.flag")
+
+
+def test_ops_paths_explicit_values_override_defaults(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "config.toml"
+    env_path = tmp_path / "env"
+    cfg_path.write_text(
+        _minimal_valid_toml() + (
+            "\n[ops]\n"
+            'audit_jsonl = "/tmp/a.jsonl"\n'
+            'state_json  = "/tmp/s.json"\n'
+            'alert_flag  = "/tmp/f.flag"\n'
+        ),
+        encoding="utf-8",
+    )
+    env_path.write_text("CIVICRM_API_KEY=k\nUNIFI_API_KEY=k\n", encoding="utf-8")
+
+    config = config_mod.load(config_path=cfg_path, env_path=env_path)
+
+    assert config.ops_paths.audit_jsonl == Path("/tmp/a.jsonl")
+    assert config.ops_paths.state_json == Path("/tmp/s.json")
+    assert config.ops_paths.alert_flag == Path("/tmp/f.flag")
+
+
+def test_ops_paths_rejects_non_string_value(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "config.toml"
+    env_path = tmp_path / "env"
+    cfg_path.write_text(
+        _minimal_valid_toml() + (
+            "\n[ops]\n"
+            "audit_jsonl = 42\n"
+        ),
+        encoding="utf-8",
+    )
+    env_path.write_text("CIVICRM_API_KEY=k\nUNIFI_API_KEY=k\n", encoding="utf-8")
+
+    with pytest.raises(config_mod.ConfigError) as excinfo:
+        config_mod.load(config_path=cfg_path, env_path=env_path)
+
+    paths = [issue.path for issue in excinfo.value.issues]
+    assert "ops.audit_jsonl" in paths

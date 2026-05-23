@@ -53,3 +53,12 @@ rank = 50
 [tier_mapping.rules."Day Pass"]
 resolution = "day-pass"
 rank = 10
+
+[ops]
+# Operational file paths. All three are optional; defaults shown.
+# - audit_jsonl: append-only JSONL of every cycle's outcome (logrotate-friendly).
+# - state_json: persistent last-success/last-halt for healthchecks.
+# - alert_flag: written on halt, removed on success; for external monitoring.
+audit_jsonl = "/var/log/door-sync/audit.jsonl"
+state_json  = "/var/lib/door-sync/state.json"
+alert_flag  = "/var/run/door-sync/alert.flag"

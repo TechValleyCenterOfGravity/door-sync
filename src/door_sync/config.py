@@ -42,12 +42,20 @@ class UnifiConfig:
 
 
 @dataclass(frozen=True)
+class OpsPaths:
+    audit_jsonl: Path
+    state_json: Path
+    alert_flag: Path
+
+
+@dataclass(frozen=True)
 class Config:
     cadence_seconds: int
     civicrm: CivicrmConfig
     unifi: UnifiConfig
     safety: SafetyThresholds
     tier_mapping: TierMapping
+    ops_paths: OpsPaths
 
 
 @dataclass(frozen=True)
@@ -157,6 +165,7 @@ def load(
     unifi = _validate_unifi(data, issues, env_get)
     safety = _validate_safety(data, issues)
     tier_mapping = _validate_tier_mapping(data, issues)
+    ops_paths = _validate_ops(data, issues)
 
     if issues:
         raise ConfigError(issues)
@@ -167,6 +176,7 @@ def load(
         unifi=unifi,
         safety=safety,
         tier_mapping=tier_mapping,
+        ops_paths=ops_paths,
     )
 
 
@@ -388,6 +398,42 @@ def _validate_safety(
         mass_add_pct=mass_add,
         mass_policy_pct=mass_policy,
         baseline_floor=floor,
+    )
+
+
+_DEFAULT_OPS_PATHS = OpsPaths(
+    audit_jsonl=Path("/var/log/door-sync/audit.jsonl"),
+    state_json=Path("/var/lib/door-sync/state.json"),
+    alert_flag=Path("/var/run/door-sync/alert.flag"),
+)
+
+
+def _validate_ops(
+    data: dict[str, Any], issues: list[ConfigIssue]
+) -> OpsPaths:
+    section = data.get("ops", {})
+    if not isinstance(section, dict):
+        issues.append(ConfigIssue(path="ops", message="must be a table"))
+        return _DEFAULT_OPS_PATHS
+
+    def _string_path(key: str, default: Path) -> Path:
+        raw = section.get(key)
+        if raw is None:
+            return default
+        if not isinstance(raw, str):
+            issues.append(
+                ConfigIssue(
+                    path=f"ops.{key}",
+                    message=f"must be string, got {type(raw).__name__}",
+                )
+            )
+            return default
+        return Path(raw)
+
+    return OpsPaths(
+        audit_jsonl=_string_path("audit_jsonl", _DEFAULT_OPS_PATHS.audit_jsonl),
+        state_json=_string_path("state_json", _DEFAULT_OPS_PATHS.state_json),
+        alert_flag=_string_path("alert_flag", _DEFAULT_OPS_PATHS.alert_flag),
     )
 
 
