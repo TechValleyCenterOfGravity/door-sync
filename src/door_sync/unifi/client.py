@@ -23,7 +23,7 @@ from typing import Any
 import httpx
 
 from door_sync.config import UnifiConfig
-from door_sync.models import UnifiUser
+from door_sync.models import Diff, UnifiUser
 
 _UNIFI_PORT = 12445
 _MAX_ATTEMPTS = 3
@@ -246,6 +246,54 @@ class UnifiClient:
             active=active,
             policy=policy,
         )
+
+    def apply(self, diff: Diff) -> None:
+        """Apply a diff to UniFi Access.
+
+        Precondition: fetch_users() must have been called on this instance
+        first (the orchestrator's flow enforces this). The cached
+        unifi_user_id and nfc_cards maps it populates are required.
+        """
+        if not self._fetched_users_done:
+            raise UnifiClientError(
+                "apply() requires a prior fetch_users() call on the same instance"
+            )
+        if self._dry_run:
+            self._log_dry_run_actions(diff)
+            return
+        # Live writes — implemented in Tasks 8-12.
+        raise UnifiClientError(
+            "live apply() not yet implemented (this branch should be unreachable)"
+        )
+
+    def _log_dry_run_actions(self, diff: Diff) -> None:
+        for member in diff.to_add:
+            logger.info(
+                "would-add contact=%d card=%s policy=%s",
+                member.contact_id,
+                _redact(member.card_id),
+                member.target_policy,
+            )
+        for resolved, unifi_user in diff.to_update_credential:
+            logger.info(
+                "would-update-credential contact=%d old_card=%s new_card=%s",
+                resolved.contact_id,
+                _redact(unifi_user.card_id),
+                _redact(resolved.card_id),
+            )
+        for resolved, unifi_user in diff.to_update_policy:
+            logger.info(
+                "would-update-policy contact=%d old=%s new=%s",
+                resolved.contact_id,
+                unifi_user.policy,
+                resolved.target_policy,
+            )
+        for unifi_user in diff.to_deactivate:
+            logger.info(
+                "would-deactivate contact=%d card=%s",
+                unifi_user.contact_id,
+                _redact(unifi_user.card_id),
+            )
 
     def close(self) -> None:
         # httpx.Client may not exist if __init__ failed before constructing it.

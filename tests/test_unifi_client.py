@@ -9,6 +9,7 @@ import pytest
 from pytest_httpx import HTTPXMock
 
 from door_sync.config import UnifiConfig
+from door_sync.models import Diff, ResolvedMember, UnifiUser
 from door_sync.unifi.client import (
     UnifiClient,
     UnifiClientError,
@@ -425,4 +426,98 @@ def test_fetch_users_foreign_fc_card_yields_card_id_none(
     client = _make_client()
     users = client.fetch_users()
     assert users[0].card_id is None
+    client.close()
+
+
+# --- apply preconditions & dry-run ---
+
+
+def _diff(
+    to_add: list[ResolvedMember] | None = None,
+    to_update_credential: list[tuple[ResolvedMember, UnifiUser]] | None = None,
+    to_update_policy: list[tuple[ResolvedMember, UnifiUser]] | None = None,
+    to_deactivate: list[UnifiUser] | None = None,
+    unmapped: list[ResolvedMember] | None = None,
+) -> Diff:
+    return Diff(
+        to_add=to_add or [],
+        to_update_credential=to_update_credential or [],
+        to_update_policy=to_update_policy or [],
+        to_deactivate=to_deactivate or [],
+        unmapped=unmapped or [],
+    )
+
+
+def _resolved(
+    contact_id: int,
+    card_id: int | None = 1234,
+    target_policy: str = "pol-1",
+) -> ResolvedMember:
+    return ResolvedMember(
+        contact_id=contact_id,
+        display_name=f"Member {contact_id}",
+        card_id=card_id,
+        target_policy=target_policy,
+        resolution="tier",
+    )
+
+
+def _unifi_user(
+    contact_id: int,
+    card_id: int | None = 1234,
+    active: bool = True,
+    policy: str | None = "pol-1",
+) -> UnifiUser:
+    return UnifiUser(
+        contact_id=contact_id,
+        display_name=f"Member {contact_id}",
+        card_id=card_id,
+        active=active,
+        policy=policy,
+    )
+
+
+def test_apply_requires_prior_fetch_users(httpx_mock: HTTPXMock) -> None:
+    """Calling apply() before fetch_users() must raise."""
+    client = _make_client()
+    with pytest.raises(UnifiClientError) as exc_info:
+        client.apply(_diff(to_deactivate=[_unifi_user(99)]))
+    assert "fetch_users" in str(exc_info.value)
+    client.close()
+
+
+def test_apply_dry_run_makes_no_writes(
+    httpx_mock: HTTPXMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Non-empty diff in dry-run logs intentions but issues zero httpx writes."""
+    cert = b"fake-cert"
+    fp = hashlib.sha256(cert).hexdigest()
+    config = _unifi_config(fingerprint=fp)
+    with _patched_tls(cert):
+        client = UnifiClient(config, dry_run=True)
+
+    # Seed the precondition: a fetch_users that returns empty.
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page([], total=0),
+    )
+    client.fetch_users()
+
+    diff = _diff(
+        to_add=[_resolved(1)],
+        to_deactivate=[_unifi_user(2)],
+    )
+    with caplog.at_level(logging.INFO, logger="door_sync.unifi.client"):
+        client.apply(diff)
+
+    # Only the one fetch_users GET should have been issued — no writes.
+    assert len(httpx_mock.get_requests()) == 1
+    # Two log lines: would-add and would-deactivate.
+    messages = [r.message for r in caplog.records]
+    assert any("would-add" in m for m in messages)
+    assert any("would-deactivate" in m for m in messages)
+    # Card IDs are redacted.
+    assert any("****1234" in m for m in messages)
+    assert not any("1234 " in m and "****" not in m for m in messages)
     client.close()
