@@ -36,6 +36,9 @@ def reconcile(config: Config, *, dry_run: bool) -> ReconcileResult:
             path=paths.audit_jsonl,
             facility_code=config.unifi.facility_code,
         )
+        # Raise alert even in dry-run: an operator running --dry-run still
+        # wants to know if safety would halt. The flag is cleared only by a
+        # successful live cycle.
         alert.raise_(check.reason or "halted", path=paths.alert_flag)
         if not dry_run:
             state.write_halt(paths.state_json, check.reason or "")

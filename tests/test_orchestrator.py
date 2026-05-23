@@ -66,11 +66,15 @@ class FakeUnifiClient:
         self.dry_run = dry_run
         self._users = list(users or [])
         self.apply_calls: list[Diff] = []
+        self._fetch_called = False
 
     def fetch_users(self) -> list[UnifiUser]:
+        self._fetch_called = True
         return list(self._users)
 
     def apply(self, diff: Diff) -> None:
+        if not self._fetch_called:
+            raise RuntimeError("apply() requires prior fetch_users() call")
         self.apply_calls.append(diff)
         if self.dry_run:
             return
@@ -89,7 +93,7 @@ class FakeUnifiClient:
             existing = by_contact[m.contact_id]
             by_contact[m.contact_id] = UnifiUser(
                 contact_id=existing.contact_id,
-                display_name=existing.display_name,
+                display_name=m.display_name,
                 card_id=m.card_id,
                 active=existing.active,
                 policy=existing.policy,
