@@ -838,3 +838,35 @@ def test_apply_update_credential_name_only(
     ]
     assert user_nfc_calls == []
     client.close()
+
+
+def test_apply_update_policy_replaces(
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
+    cert = b"fake-cert"
+    fp = hashlib.sha256(cert).hexdigest()
+    config = _unifi_config(fingerprint=fp)
+    with _patched_tls(cert):
+        client = UnifiClient(config)
+
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page([_user_row(contact_id=42, user_id="uuid-42", policy_id="pol-old")]),
+    )
+    fetched = client.fetch_users()
+
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42/access_policies",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+
+    resolved = _resolved(contact_id=42, target_policy="pol-new")
+    diff = _diff(to_update_policy=[(resolved, fetched[0])])
+    client.apply(diff)
+
+    put_req = httpx_mock.get_requests()[-1]
+    assert _json.loads(put_req.content) == {"access_policy_ids": ["pol-new"]}
+    client.close()

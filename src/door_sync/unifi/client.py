@@ -263,7 +263,8 @@ class UnifiClient:
             return
         self._apply_deactivate(diff)
         self._apply_update_credential(diff)
-        # Other buckets implemented in subsequent tasks.
+        self._apply_update_policy(diff)
+        # to_add implemented in next task.
 
     _INTER_CALL_DELAY_SECONDS = 0.075
 
@@ -326,6 +327,28 @@ class UnifiClient:
                         json={"token": new_token, "force_add": False},
                     )
                     time.sleep(self._INTER_CALL_DELAY_SECONDS)
+
+    def _apply_update_policy(self, diff: Diff) -> None:
+        for resolved, _unifi_user in diff.to_update_policy:
+            user_id = self._unifi_user_id_by_contact.get(resolved.contact_id)
+            if user_id is None:
+                logger.warning(
+                    "skipping update_policy for contact=%d: no cached user_id",
+                    resolved.contact_id,
+                )
+                continue
+            if resolved.target_policy is None:
+                logger.warning(
+                    "skipping update_policy for contact=%d: target_policy is None",
+                    resolved.contact_id,
+                )
+                continue
+            self._request(
+                "PUT",
+                f"/api/v1/developer/users/{user_id}/access_policies",
+                json={"access_policy_ids": [resolved.target_policy]},
+            )
+            time.sleep(self._INTER_CALL_DELAY_SECONDS)
 
     def _apply_deactivate(self, diff: Diff) -> None:
         for unifi_user in diff.to_deactivate:
