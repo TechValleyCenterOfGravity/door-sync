@@ -38,6 +38,7 @@ class UnifiConfig:
     host: str
     api_key: str
     tls_fingerprint: str
+    facility_code: int
 
 
 @dataclass(frozen=True)
@@ -295,7 +296,39 @@ def _validate_unifi(
                 message="required env var is missing or empty",
             )
         )
-    return UnifiConfig(host=host, api_key=api_key, tls_fingerprint=fingerprint)
+    facility_code_raw = section.get("facility_code")
+    if facility_code_raw is None:
+        issues.append(
+            ConfigIssue(
+                path="unifi.facility_code",
+                message="required: Wiegand-26 facility code (0-255)",
+            )
+        )
+        facility_code = 0
+    elif isinstance(facility_code_raw, bool) or not isinstance(facility_code_raw, int):
+        issues.append(
+            ConfigIssue(
+                path="unifi.facility_code",
+                message=f"must be int, got {type(facility_code_raw).__name__}",
+            )
+        )
+        facility_code = 0
+    elif not (0 <= facility_code_raw <= 255):
+        issues.append(
+            ConfigIssue(
+                path="unifi.facility_code",
+                message=f"must be between 0 and 255, got {facility_code_raw}",
+            )
+        )
+        facility_code = 0
+    else:
+        facility_code = facility_code_raw
+    return UnifiConfig(
+        host=host,
+        api_key=api_key,
+        tls_fingerprint=fingerprint,
+        facility_code=facility_code,
+    )
 
 
 def _validate_safety(

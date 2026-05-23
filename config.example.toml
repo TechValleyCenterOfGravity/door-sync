@@ -20,6 +20,11 @@ host = "https://unifi.example.org:12445"
 #   openssl s_client -connect host:port < /dev/null 2>/dev/null \
 #     | openssl x509 -fingerprint -sha256 -noout
 tls_fingerprint = "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89"
+# Wiegand 26-bit facility code (0-255), constant per site.
+# Get this from your access-control vendor or by reading any existing
+# enrolled card via the UniFi Access UI > Credentials > NFC Cards
+# (the value is encoded in nfc_id as the upper byte of the hex).
+facility_code = 42
 
 [safety]
 # These match the defaults baked into SafetyThresholds; tune per deployment.

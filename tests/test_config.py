@@ -22,7 +22,7 @@ def test_civicrm_config_is_frozen() -> None:
 
 
 def test_unifi_config_is_frozen() -> None:
-    u = UnifiConfig(host="https://x", api_key="k", tls_fingerprint="AB" * 32)
+    u = UnifiConfig(host="https://x", api_key="k", tls_fingerprint="AB" * 32, facility_code=0)
     with pytest.raises(FrozenInstanceError):
         u.api_key = "z"  # type: ignore[misc]
 
@@ -31,7 +31,7 @@ def test_config_is_frozen() -> None:
     c = Config(
         cadence_seconds=600,
         civicrm=CivicrmConfig(host="https://x", api_key="k", card_id_field="G.f"),
-        unifi=UnifiConfig(host="https://y", api_key="k", tls_fingerprint="AB" * 32),
+        unifi=UnifiConfig(host="https://y", api_key="k", tls_fingerprint="AB" * 32, facility_code=0),
         safety=SafetyThresholds(),
         tier_mapping=TierMapping(rules={}),
     )
@@ -172,6 +172,7 @@ def test_explicit_paths_override_defaults(
         '[civicrm]\nhost = "https://c"\ncard_id_field = "G.f"\n'
         '[unifi]\nhost = "https://u"\n'
         'tls_fingerprint = "' + "AB" * 32 + '"\n'
+        'facility_code = 42\n'
     )
     env.write_text("CIVICRM_API_KEY=x\nUNIFI_API_KEY=y\n")
     result = load(config_path=cfg, env_path=env)
@@ -186,6 +187,7 @@ def test_env_var_dir_supplies_defaults(
         '[civicrm]\nhost = "https://c"\ncard_id_field = "G.f"\n'
         '[unifi]\nhost = "https://u"\n'
         'tls_fingerprint = "' + "AB" * 32 + '"\n'
+        'facility_code = 42\n'
     )
     (tmp_path / "env").write_text("CIVICRM_API_KEY=x\nUNIFI_API_KEY=y\n")
     monkeypatch.setenv("DOOR_SYNC_CONFIG_DIR", str(tmp_path))
@@ -219,6 +221,7 @@ def _write_minimal_valid(tmp_path: Path) -> tuple[Path, Path]:
         "[unifi]\n"
         'host = "https://unifi.example.org"\n'
         'tls_fingerprint = "' + ("AB:" * 31 + "AB") + '"\n'
+        "facility_code = 42\n"
     )
     env.write_text("CIVICRM_API_KEY=civikey\nUNIFI_API_KEY=unifikey\n")
     return cfg, env
@@ -709,6 +712,7 @@ def test_example_files_parse(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.unifi.host == "https://unifi.example.org:12445"
     assert result.unifi.api_key == "replace-me"
     assert result.unifi.tls_fingerprint.startswith("AB:CD:EF:")
+    assert result.unifi.facility_code == 42
     # safety (verifies _validate_safety builds the dataclass with example values)
     assert isinstance(result.safety, SafetyThresholds)
     assert result.safety.mass_deactivate_pct == 0.15
@@ -727,3 +731,54 @@ def test_example_files_parse(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "Day Pass" in result.tier_mapping.rules
     assert result.tier_mapping.rules["Day Pass"].resolution == "day-pass"
     assert result.tier_mapping.rules["Day Pass"].target_policy is None
+
+
+# --- facility_code tests ---
+
+
+def test_load_rejects_missing_facility_code(tmp_path: Path) -> None:
+    """facility_code is required; absence is a clear ConfigError."""
+    cfg, env = _write_minimal_valid(tmp_path)
+    # Strip the facility_code line we just added in the helper.
+    content = cfg.read_text()
+    content = "\n".join(
+        line for line in content.splitlines()
+        if not line.strip().startswith("facility_code")
+    )
+    cfg.write_text(content)
+    with pytest.raises(ConfigError) as exc_info:
+        load(config_path=cfg, env_path=env)
+    assert any(
+        i.path == "unifi.facility_code"
+        for i in exc_info.value.issues
+    )
+
+
+@pytest.mark.parametrize(
+    "value,reason",
+    [
+        ("-1", "must be between 0 and 255"),
+        ("256", "must be between 0 and 255"),
+        ('"forty-two"', "must be int"),
+        ("true", "must be int"),
+    ],
+)
+def test_load_rejects_invalid_facility_code(
+    tmp_path: Path, value: str, reason: str
+) -> None:
+    """Out-of-range or wrong-type facility_code raises with helpful message."""
+    cfg, env = _write_minimal_valid(tmp_path)
+    content = cfg.read_text()
+    # Replace the facility_code = 42 line.
+    content = "\n".join(
+        f"facility_code = {value}" if line.strip().startswith("facility_code")
+        else line
+        for line in content.splitlines()
+    )
+    cfg.write_text(content)
+    with pytest.raises(ConfigError) as exc_info:
+        load(config_path=cfg, env_path=env)
+    assert any(
+        i.path == "unifi.facility_code" and reason in i.message
+        for i in exc_info.value.issues
+    ), [i for i in exc_info.value.issues]
