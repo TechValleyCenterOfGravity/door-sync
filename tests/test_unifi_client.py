@@ -1077,3 +1077,117 @@ def test_apply_reactivate_swaps_card_when_changed(
         ("PUT", "/api/v1/developer/users/uuid-42/access_policies"),
     ]
     client.close()
+
+
+def test_apply_executes_deactivate_update_credential_update_policy_add_order(
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Single diff with one entry in each bucket; assert HTTPX call sequence."""
+    monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
+    cert = b"fake-cert"
+    fp = hashlib.sha256(cert).hexdigest()
+    config = _unifi_config(fingerprint=fp)
+    with _patched_tls(cert):
+        client = UnifiClient(config)
+
+    # 3 users in fetch: 100 (deactivate), 101 (update_credential), 102 (update_policy).
+    # Users 101 and 102 have names matching what _resolved() produces ("Member N")
+    # so no name-PUT fires — only the card swap for 101 and policy update for 102.
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page([
+            _user_row(contact_id=100, user_id="u100", nfc_id="2A04D2", nfc_token="t100"),
+            _user_row(
+                contact_id=101, user_id="u101",
+                first_name="Member", last_name="101",
+                nfc_id="2A04D3", nfc_token="t101",
+            ),
+            _user_row(
+                contact_id=102, user_id="u102",
+                first_name="Member", last_name="102",
+                nfc_id="2A04D4", nfc_token="t102", policy_id="old",
+            ),
+        ]),
+    )
+    fetched = client.fetch_users()
+    by_id = {u.contact_id: u for u in fetched}
+
+    # Token-map fetch. Includes card 1238 (2A04D6) so no import is needed.
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_cards_page([
+            {"nfc_id": "2A04D2", "token": "t100"},
+            {"nfc_id": "2A04D3", "token": "t101"},
+            {"nfc_id": "2A04D4", "token": "t102"},
+            {"nfc_id": "2A04D6", "token": "t1238"},
+        ]),
+    )
+
+    # Pre-set generic SUCCESS responses for the writes.
+    for url, method in [
+        ("https://192.0.2.1:12445/api/v1/developer/users/u100", "PUT"),
+        ("https://192.0.2.1:12445/api/v1/developer/users/u101/nfc_cards/delete", "DELETE"),
+        ("https://192.0.2.1:12445/api/v1/developer/users/u101/nfc_cards", "PUT"),
+        ("https://192.0.2.1:12445/api/v1/developer/users/u102/access_policies", "PUT"),
+    ]:
+        httpx_mock.add_response(
+            method=method, url=url,
+            json={"code": "SUCCESS", "msg": "success", "data": None},
+        )
+
+    diff = _diff(
+        to_deactivate=[by_id[100]],
+        to_update_credential=[(_resolved(101, card_id=1238), by_id[101])],
+        to_update_policy=[(_resolved(102, target_policy="new"), by_id[102])],
+    )
+    client.apply(diff)
+
+    write_path_methods = [
+        (r.method, r.url.path) for r in httpx_mock.get_requests()
+        if r.method in ("PUT", "POST", "DELETE")
+        and "/credentials/nfc_cards/import" not in r.url.path
+    ]
+    # Expected order: deactivate(100), update_credential(101 DELETE then PUT card),
+    # update_policy(102).
+    assert write_path_methods == [
+        ("PUT", "/api/v1/developer/users/u100"),
+        ("DELETE", "/api/v1/developer/users/u101/nfc_cards/delete"),
+        ("PUT", "/api/v1/developer/users/u101/nfc_cards"),
+        ("PUT", "/api/v1/developer/users/u102/access_policies"),
+    ]
+    client.close()
+
+
+def test_apply_inter_call_delay_invoked(
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """time.sleep(0.075) is called once per write."""
+    sleeps: list[float] = []
+    monkeypatch.setattr(
+        "door_sync.unifi.client.time.sleep", lambda s: sleeps.append(s)
+    )
+    cert = b"fake-cert"
+    fp = hashlib.sha256(cert).hexdigest()
+    config = _unifi_config(fingerprint=fp)
+    with _patched_tls(cert):
+        client = UnifiClient(config)
+
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page([_user_row(contact_id=42, user_id="uuid-42")]),
+    )
+    fetched = client.fetch_users()
+
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+
+    client.apply(_diff(to_deactivate=[fetched[0]]))
+    # One write → one sleep of 0.075.
+    assert sleeps == [0.075]
+    client.close()
