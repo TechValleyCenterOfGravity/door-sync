@@ -582,3 +582,86 @@ def test_token_map_cached_across_calls(httpx_mock: HTTPXMock) -> None:
     assert first is second
     assert len(httpx_mock.get_requests()) == 1
     client.close()
+
+
+# --- Card import ---
+
+
+def test_import_cards_uses_2col_csv_format(httpx_mock: HTTPXMock) -> None:
+    """Multipart body contains <nfc_id>,sync-<padded> lines, no header."""
+    cert = b"fake-cert"
+    fp = hashlib.sha256(cert).hexdigest()
+    config = _unifi_config(fingerprint=fp)
+    with _patched_tls(cert):
+        client = UnifiClient(config)
+
+    # First, an empty token-map fetch.
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_cards_page([]),
+    )
+    # Then the import.
+    httpx_mock.add_response(
+        method="POST",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/import",
+        json={
+            "code": "SUCCESS",
+            "msg": "success",
+            "data": [
+                {"alias": "sync-01234", "nfc_id": "2A04D2", "token": "tok-1234"},
+                {"alias": "sync-01235", "nfc_id": "2A04D3", "token": "tok-1235"},
+            ],
+        },
+    )
+    client._import_cards([1234, 1235])
+
+    # Inspect the second request — the multipart body must contain our CSV.
+    import_req = httpx_mock.get_requests()[1]
+    body = import_req.content.decode("utf-8", errors="replace")
+    assert "2A04D2,sync-01234" in body
+    assert "2A04D3,sync-01235" in body
+    # No header row.
+    assert "nfc_id,alias" not in body
+    # Token map updated.
+    assert client._nfc_token_map == {1234: "tok-1234", 1235: "tok-1235"}
+    client.close()
+
+
+def test_import_cards_empty_token_raises(httpx_mock: HTTPXMock) -> None:
+    """A row with empty token in the response signals a failed import."""
+    cert = b"fake-cert"
+    fp = hashlib.sha256(cert).hexdigest()
+    config = _unifi_config(fingerprint=fp)
+    with _patched_tls(cert):
+        client = UnifiClient(config)
+
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_cards_page([]),
+    )
+    httpx_mock.add_response(
+        method="POST",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/import",
+        json={
+            "code": "SUCCESS",
+            "msg": "success",
+            "data": [{"alias": "sync-01234", "nfc_id": "2A04D2", "token": ""}],
+        },
+    )
+    with pytest.raises(UnifiClientError) as exc_info:
+        client._import_cards([1234])
+    assert "card_id=****1234" in str(exc_info.value)
+    client.close()
+
+
+def test_import_cards_empty_list_is_noop(httpx_mock: HTTPXMock) -> None:
+    cert = b"fake-cert"
+    fp = hashlib.sha256(cert).hexdigest()
+    config = _unifi_config(fingerprint=fp)
+    with _patched_tls(cert):
+        client = UnifiClient(config)
+    client._import_cards([])
+    assert len(httpx_mock.get_requests()) == 0
+    client.close()

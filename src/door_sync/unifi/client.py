@@ -332,6 +332,45 @@ class UnifiClient:
         self._nfc_token_map = token_map
         return token_map
 
+    def _import_cards(self, card_ids: list[int]) -> None:
+        """Register a batch of cards via CSV upload; update the token map.
+
+        Per spec §9: 2-column CSV (`<nfc_id>,<alias>`), no header; multipart
+        upload via field name `file`. On per-row failure (empty token in
+        response), raise immediately.
+        """
+        if not card_ids:
+            return
+        token_map = self._ensure_nfc_token_map()
+        lines: list[str] = []
+        for card_id in card_ids:
+            nfc_id = _compute_nfc_id(self._config.facility_code, card_id)
+            alias = f"sync-{card_id:05d}"
+            lines.append(f"{nfc_id},{alias}")
+        csv_bytes = ("\n".join(lines) + "\n").encode("utf-8")
+        data = self._request(
+            "POST",
+            "/api/v1/developer/credentials/nfc_cards/import",
+            files={"file": ("cards.csv", csv_bytes, "text/csv")},
+        )
+        if not isinstance(data, list):
+            raise UnifiClientError(
+                f"expected list from /nfc_cards/import, got {type(data).__name__}"
+            )
+        for row in data:
+            nfc_id = str(row.get("nfc_id", ""))
+            token = str(row.get("token", ""))
+            parsed_card_id = _parse_nfc_id(nfc_id, self._config.facility_code)
+            if parsed_card_id is None:
+                raise UnifiClientError(
+                    f"import returned card with wrong FC or unparseable nfc_id: {nfc_id!r}"
+                )
+            if not token:
+                raise UnifiClientError(
+                    f"card import failed for card_id={_redact(parsed_card_id)} (empty token in response)"
+                )
+            token_map[parsed_card_id] = token
+
     def close(self) -> None:
         # httpx.Client may not exist if __init__ failed before constructing it.
         http = getattr(self, "_http", None)
