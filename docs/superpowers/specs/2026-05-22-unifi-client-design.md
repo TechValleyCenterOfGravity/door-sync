@@ -134,7 +134,7 @@ Pagination follows the same shape as `CivicrmClient`: a `_MAX_PAGES = 1_000` cei
 2. **Import unknown cards** (one batched CSV upload if any are missing):
    - Compute the set of `card_id`s appearing in `diff.to_add` and `diff.to_update_credential` that are *not* in the token map.
    - If empty: skip.
-   - Else: assemble a CSV in memory (header row + one row per missing card_id), `POST /api/v1/developer/credentials/nfc_cards/import` (multipart, field name `file`).
+   - Else: assemble a CSV in memory (one row per missing card_id, no header row — see §9 for the exact format), `POST /api/v1/developer/credentials/nfc_cards/import` (multipart, field name `file`).
    - On success, parse the response's `data` array of `{nfc_id, token}` entries and merge into the token map.
 3. **Deactivate** (`PUT /users/:id` with body `{"status": "DEACTIVATED"}` for each entry in `diff.to_deactivate`).
 4. **Update credential** — for each `(resolved, unifi_user)` in `diff.to_update_credential`:
