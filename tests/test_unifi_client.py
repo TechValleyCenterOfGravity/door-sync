@@ -5,6 +5,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pytest_httpx import HTTPXMock
 
 from door_sync.config import UnifiConfig
 from door_sync.unifi.client import (
@@ -172,3 +173,105 @@ def test_context_manager_closes_http_client() -> None:
         with UnifiClient(config) as client:
             assert client._http.is_closed is False
     assert client._http.is_closed is True
+
+
+# --- Response envelope + retries ---
+
+
+def _make_client(httpx_mock: HTTPXMock) -> UnifiClient:
+    """Build a UnifiClient with TLS verification stubbed out."""
+    cert = b"fake-cert"
+    fp = hashlib.sha256(cert).hexdigest()
+    config = _unifi_config(fingerprint=fp)
+    with _patched_tls(cert):
+        return UnifiClient(config)
+
+
+def test_non_success_envelope_raises(httpx_mock: HTTPXMock) -> None:
+    """code != SUCCESS raises UnifiClientError with the code + msg."""
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json={"code": "CODE_AUTH_FAILED", "msg": "Authentication failed.", "data": None},
+    )
+    client = _make_client(httpx_mock)
+    with pytest.raises(UnifiClientError) as exc_info:
+        client.fetch_users()  # type: ignore[attr-defined]
+    assert "CODE_AUTH_FAILED" in str(exc_info.value)
+    assert "Authentication failed." in str(exc_info.value)
+    client.close()
+
+
+def test_http_500_retries_then_raises(
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Three consecutive 500s exhaust retries and raise."""
+    monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
+    for _ in range(3):
+        httpx_mock.add_response(
+            method="GET",
+            url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+            status_code=500,
+            text="server error",
+        )
+    client = _make_client(httpx_mock)
+    with pytest.raises(UnifiClientError) as exc_info:
+        client.fetch_users()  # type: ignore[attr-defined]
+    assert "HTTP 500" in str(exc_info.value)
+    client.close()
+
+
+def test_http_402_raises_immediately_no_retry(httpx_mock: HTTPXMock) -> None:
+    """402 'Request Failed' is non-standard 4xx; no retries."""
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        status_code=402,
+        text="request failed",
+    )
+    client = _make_client(httpx_mock)
+    with pytest.raises(UnifiClientError) as exc_info:
+        client.fetch_users()  # type: ignore[attr-defined]
+    assert "HTTP 402" in str(exc_info.value)
+    # Only one request should have been made.
+    assert len(httpx_mock.get_requests()) == 1
+    client.close()
+
+
+def test_http_429_honors_retry_after_seconds(
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """429 with Retry-After: 5 waits >= 5 seconds, then 200 succeeds."""
+    sleeps: list[float] = []
+    monkeypatch.setattr(
+        "door_sync.unifi.client.time.sleep", lambda s: sleeps.append(s)
+    )
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        status_code=429,
+        headers={"Retry-After": "5"},
+    )
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json={"code": "SUCCESS", "data": [], "msg": "success", "pagination": {"page_num": 1, "page_size": 100, "total": 0}},
+    )
+    client = _make_client(httpx_mock)
+    client.fetch_users()  # type: ignore[attr-defined]
+    assert any(s >= 5 for s in sleeps)
+    client.close()
+
+
+def test_malformed_json_raises(httpx_mock: HTTPXMock) -> None:
+    """200 with non-JSON body raises UnifiClientError."""
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        text="<html>not json</html>",
+    )
+    client = _make_client(httpx_mock)
+    with pytest.raises(UnifiClientError) as exc_info:
+        client.fetch_users()  # type: ignore[attr-defined]
+    assert "malformed JSON" in str(exc_info.value)
+    client.close()

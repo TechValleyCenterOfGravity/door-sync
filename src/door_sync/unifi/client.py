@@ -10,15 +10,23 @@ them. See docs/architecture.md §4-§5 for the layering rules.
 """
 
 import hashlib
+import json as _json
+import random
 import socket
 import ssl
+import time
+from collections.abc import Callable
 from types import TracebackType
+from typing import Any
 
 import httpx
 
 from door_sync.config import UnifiConfig
 
 _UNIFI_PORT = 12445
+_MAX_ATTEMPTS = 3
+_MAX_PAGES = 1_000
+_PAGE_SIZE = 100
 
 
 class UnifiClientError(Exception):
@@ -64,6 +72,89 @@ class UnifiClient:
                 f"TLS fingerprint mismatch: expected {expected_fp[:16]}…, "
                 f"got {actual_fp[:16]}…"
             )
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json: Any = None,
+        files: dict[str, Any] | None = None,
+    ) -> Any:
+        """Execute one API call with retries; unwrap the response envelope.
+
+        Returns the `data` field on SUCCESS; raises UnifiClientError otherwise.
+        """
+
+        def _do() -> httpx.Response:
+            return self._http.request(
+                method, path, params=params, json=json, files=files
+            )
+
+        response = self._with_retries(_do)
+        return self._unwrap(response)
+
+    def _unwrap(self, response: httpx.Response) -> Any:
+        try:
+            payload = response.json()
+        except (ValueError, _json.JSONDecodeError) as e:
+            raise UnifiClientError(
+                f"malformed JSON from {response.url}: {e}"
+            ) from e
+        if not isinstance(payload, dict):
+            raise UnifiClientError(
+                f"unexpected envelope shape from {response.url}: "
+                f"expected object, got {type(payload).__name__}"
+            )
+        code = payload.get("code")
+        if code != "SUCCESS":
+            msg = payload.get("msg", "")
+            raise UnifiClientError(f"{code}: {msg}")
+        return payload.get("data")
+
+    def _with_retries(
+        self, action: Callable[[], httpx.Response]
+    ) -> httpx.Response:
+        for attempt in range(1, _MAX_ATTEMPTS + 1):
+            try:
+                response = action()
+            except httpx.RequestError as e:
+                if attempt == _MAX_ATTEMPTS:
+                    raise UnifiClientError(
+                        f"network failure after {_MAX_ATTEMPTS} attempts: {e}"
+                    ) from e
+                time.sleep(_backoff_seconds(attempt))
+                continue
+
+            if response.status_code == 429:
+                if attempt == _MAX_ATTEMPTS:
+                    raise UnifiClientError(
+                        f"HTTP 429 after {_MAX_ATTEMPTS} attempts: "
+                        f"{response.text[:200]}"
+                    )
+                wait = _parse_retry_after(response) or _backoff_seconds(attempt)
+                time.sleep(wait)
+                continue
+
+            if 500 <= response.status_code < 600:
+                if attempt == _MAX_ATTEMPTS:
+                    raise UnifiClientError(
+                        f"HTTP {response.status_code} after {_MAX_ATTEMPTS} attempts: "
+                        f"{response.text[:200]}"
+                    )
+                time.sleep(_backoff_seconds(attempt))
+                continue
+
+            if response.status_code >= 400:
+                # 4xx other than 429 (including non-standard 402) → permanent.
+                raise UnifiClientError(
+                    f"HTTP {response.status_code}: {response.text[:200]}"
+                )
+
+            return response
+
+        raise UnifiClientError("retry loop exited unexpectedly")
 
     def close(self) -> None:
         # httpx.Client may not exist if __init__ failed before constructing it.
@@ -135,3 +226,26 @@ def _redact(card_id: int | None) -> str:
     if card_id is None:
         return "none"
     return f"****{card_id % 10000:04d}"
+
+
+def _backoff_seconds(attempt: int) -> float:
+    """Exponential backoff with ±20% jitter. attempt is 1-indexed."""
+    base = float(2 ** (attempt - 1))
+    jitter = random.uniform(-0.2, 0.2) * base
+    return max(0.1, base + jitter)
+
+
+def _parse_retry_after(response: httpx.Response) -> float | None:
+    """Parse a Retry-After header. Returns positive seconds if numeric.
+
+    HTTP-date form is not supported (per spec) and returns None.
+    Negative and zero values return None so the caller falls back to backoff.
+    """
+    value = response.headers.get("Retry-After")
+    if value is None:
+        return None
+    try:
+        result = float(value)
+    except ValueError:
+        return None
+    return result if result > 0 else None
