@@ -2266,12 +2266,15 @@ git commit -m "Rewrite __main__.py with run/show-diff/validate-config subcommand
 
 ---
 
-## Task 9: Update CLAUDE.md
+## Task 9: Update CLAUDE.md and README.md
 
 **Files:**
 - Modify: `CLAUDE.md`
+- Modify: `README.md`
 
-- [ ] **Step 1: Update the status line**
+### CLAUDE.md
+
+- [ ] **Step 1: Update the status line in CLAUDE.md**
 
 In `CLAUDE.md`, find:
 
@@ -2285,7 +2288,7 @@ Replace with:
 **Status: in active development.** Pure modules, CiviCRM client, UniFi Access client, orchestrator + ops stubs (audit JSONL, state JSON, alert flag-file) are merged. Scheduler (daemon loop, SIGTERM handling) and a real alert transport (SMTP/webhook) are the remaining slices. Architecture is locked; see `docs/architecture.md` before adding code.
 ```
 
-- [ ] **Step 2: Update the Commands block**
+- [ ] **Step 2: Update the Commands block in CLAUDE.md**
 
 In `CLAUDE.md`, find:
 
@@ -2311,11 +2314,100 @@ uv run door-sync show-diff                    # read-only: print computed diff
 uv run door-sync validate-config              # load config, print issues, exit
 ```
 
-- [ ] **Step 3: Commit**
+### README.md
+
+- [ ] **Step 3: Update the status line in README.md**
+
+In `README.md`, find:
+
+```
+**Pre-implementation.** Architecture decided; no production code yet.
+```
+
+Replace with:
+
+```
+**In active development.** Pure modules, CiviCRM client, UniFi Access client, orchestrator + ops stubs are merged. Scheduler and a real alert transport are the remaining slices before v1.
+```
+
+- [ ] **Step 4: Update the Dev setup block in README.md**
+
+In `README.md`, find:
 
 ```bash
-git add CLAUDE.md
-git commit -m "Update CLAUDE.md for orchestrator + subcommand CLI"
+uv sync                   # install
+uv run pytest             # tests
+uv run mypy src tests     # type check
+uv run ruff check .       # lint
+```
+
+Replace with:
+
+```bash
+uv sync                            # install
+uv run pytest                      # tests
+uv run mypy --strict src tests     # type check (strict)
+uv run ruff check .                # lint
+```
+
+- [ ] **Step 5: Update the Running block in README.md**
+
+In `README.md`, find:
+
+```bash
+uv run door-sync               # live daemon on the configured schedule
+uv run door-sync --once        # one reconcile cycle, then exit
+uv run door-sync --dry-run     # compute and log the diff; make no UniFi writes
+```
+
+Replace with:
+
+```bash
+uv run door-sync run --once               # one reconcile cycle, then exit
+uv run door-sync run --once --dry-run     # compute and log the diff; make no UniFi writes
+uv run door-sync show-diff                # read-only: print the computed diff
+uv run door-sync validate-config          # load config, print issues, exit 0/1
+```
+
+Then immediately below, find:
+
+```
+Dry-run is safe to point at production data.
+```
+
+Replace with:
+
+```
+Dry-run is safe to point at production data. Daemon mode (continuous scheduling) is not yet implemented — `run` without `--once` will exit with usage error 64 until the scheduler slice lands.
+```
+
+- [ ] **Step 6: Update the Project layout block in README.md**
+
+In `README.md`, find the project layout block. Replace it with one that accurately reflects what's shipped and what's still pending:
+
+```
+src/door_sync/
+  config.py         # env + TOML loading
+  models.py         # dataclasses
+  tier_mapping.py   # resolution rules (PURE)
+  reconciler.py     # diff computation (PURE)
+  safety.py         # guards (PURE)
+  civicrm/          # API client
+  unifi/            # API client (read + write + dry-run)
+  orchestrator.py   # reconcile() — the wiring
+  audit.py          # append-only JSONL log
+  state.py          # last-success/halt JSON file
+  alert.py          # flag-file alert stub (SMTP/webhook TBD)
+  cli.py            # pretty-printers for show-diff / validate-config
+  __main__.py       # argparse + subcommand dispatch
+  scheduler.py      # daemon loop (NOT YET IMPLEMENTED)
+```
+
+- [ ] **Step 7: Commit both doc updates together**
+
+```bash
+git add CLAUDE.md README.md
+git commit -m "Update CLAUDE.md and README for orchestrator + subcommand CLI"
 ```
 
 ---
