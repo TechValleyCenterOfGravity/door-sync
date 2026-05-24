@@ -175,8 +175,8 @@ def test_context_manager_closes_http_client() -> None:
     config = _unifi_config(fingerprint=real_fp)
     with _patched_tls(real_cert):
         with UnifiClient(config) as client:
-            assert client._http.is_closed is False
-    assert client._http.is_closed is True
+            assert not client._http.is_closed
+    assert client._http.is_closed
 
 
 # --- Response envelope + retries ---

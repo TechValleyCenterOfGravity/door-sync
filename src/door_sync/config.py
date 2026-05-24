@@ -13,7 +13,7 @@ import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 from door_sync.models import SafetyThresholds, TierMapping, TierRule
 
@@ -509,7 +509,7 @@ def _validate_tier_mapping(
             continue
 
         rules[name] = TierRule(
-            resolution=resolution,
+            resolution=cast(Literal["tier", "none", "day-pass"], resolution),
             target_policy=target_policy,
             rank=rank,
         )
