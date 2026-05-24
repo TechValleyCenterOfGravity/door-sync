@@ -26,6 +26,8 @@ All tooling goes through `uv run` — the venv is managed by uv, not pip.
 ## Hard rules (from architecture doc — do not violate without a human in the loop)
 
 - **No asyncio.** Sync `httpx` only. Do not "modernize" to async; the design rejects it deliberately (architecture.md §3).
+- **CivicrmClient / UnifiClient as context managers.** Both own an `httpx.Client` and must be used inside `with` blocks (or `close()` in `finally`) to avoid socket/FD leaks. The orchestrator and CLI handlers already do this — match the pattern.
+- **Don't mix `import X` and `from X import Y` for the same module.** CodeQL flags it post-PR; local `ruff`/`mypy` don't. Pick one style per file.
 - **Pure modules stay pure.** `reconciler.py`, `safety.py`, `tier_mapping.py` take dataclasses, return dataclasses. No logging, no config lookups, no HTTP, no exceptions on data issues — return a sentinel instead (architecture.md §5).
 - **Frozen dataclasses.** All domain models in `models.py` are `@dataclass(frozen=True)`. Never mutate; construct a new instance.
 - **Strict layering.** Nothing imports `orchestrator` except `scheduler` and (future) `webhook`. See dependency table in architecture.md §4.
