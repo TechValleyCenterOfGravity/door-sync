@@ -44,6 +44,10 @@ All tooling goes through `uv run` — the venv is managed by uv, not pip.
 
 - mypy is the authoritative type checker; Pyright in the IDE lags on new packages and false-flags `__exit__` protocol args / underscore-prefixed unused params. When `uv run mypy --strict src tests`, `ruff check`, and `pytest` are all green, trust them.
 
+## PR review findings (Copilot, CodeQL, etc.)
+
+Before acting on a bot finding, read the flagged code and confirm the issue is real. Bots have false positives and sometimes propose suboptimal fixes — verify the flagged lines and surrounding context first, then decide whether to apply their suggestion, apply a different fix, or push back.
+
 ## Config
 
 Two-file split: secrets in env (`.env` dev, `/etc/door-sync/env` prod, mode 0400), everything else in TOML (`config.toml` dev, `/etc/door-sync/config.toml` prod). Schema is not yet implemented.
