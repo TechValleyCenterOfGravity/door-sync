@@ -2,7 +2,7 @@
 
 CiviCRM → UniFi Access reconciliation daemon. Runs on a Raspberry Pi under systemd.
 
-**Status: in active development.** Pure modules, CiviCRM client, UniFi Access client, orchestrator + ops stubs (audit JSONL, state JSON, alert flag-file) are merged. Scheduler (daemon loop, SIGTERM handling) and a real alert transport (SMTP/webhook) are the remaining slices. Architecture is locked; see `docs/architecture.md` before adding code.
+**Status: in active development.** Pure modules, CiviCRM client, UniFi Access client, orchestrator + ops stubs (audit JSONL, state JSON, alert flag-file), and the scheduler daemon loop (SIGTERM/SIGINT handling) are merged. A real alert transport (SMTP/webhook) is the remaining slice. Architecture is locked; see `docs/architecture.md` before adding code.
 
 ## Commands
 
