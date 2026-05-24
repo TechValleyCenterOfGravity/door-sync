@@ -1,14 +1,16 @@
 """door-sync CLI entry point.
 
 Subcommands:
-  run [--once] [--dry-run]  Run daemon loop (default) or one cycle (--once).
-  show-diff                 Read-only: fetch + compute diff, pretty-print, exit.
-  validate-config           Load config, print issues, exit 0 (ok) or 1 (bad).
+  run [--dry-run]          Run the reconcile loop until SIGTERM/SIGINT
+                           (daemon mode; cadence from config.cadence_seconds).
+  run --once [--dry-run]   Execute one reconcile cycle and exit.
+  show-diff                Read-only: fetch + compute diff, pretty-print, exit.
+  validate-config          Load config, print issues, exit 0 (ok) or 1 (bad).
 
 Exit codes:
-  0  success
+  0  success (one-shot success; daemon clean shutdown)
   1  cycle halted by safety guards; config validation failed
-  2  cycle crashed (exception escaped orchestrator); show-diff fetch failed
+  2  cycle crashed (--once only — daemon catches and continues); show-diff fetch failed
  64  CLI usage error (argparse default)
 """
 
@@ -71,7 +73,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run_p.add_argument(
         "--once",
         action="store_true",
-        help="Run one cycle and exit (REQUIRED for now)",
+        help="Run one cycle and exit (default: run the daemon loop)",
     )
     run_p.add_argument(
         "--dry-run",
