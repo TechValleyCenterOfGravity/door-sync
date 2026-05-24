@@ -298,6 +298,7 @@ shutdown ends the loop.
 import logging
 import signal
 import threading
+import types
 from typing import Protocol
 
 from door_sync import orchestrator
@@ -312,7 +313,7 @@ class ReconcileFn(Protocol):
 
 
 def _install_signal_handlers(event: threading.Event) -> None:
-    def _handler(signum: int, _frame: object) -> None:
+    def _handler(signum: int, _frame: types.FrameType | None) -> None:
         _logger.info(
             "shutdown signal received (%s); exiting after current cycle",
             signal.Signals(signum).name,
@@ -932,7 +933,7 @@ Add a new section to `README.md`:
 
 `deploy/door-sync.service` is a systemd unit template. To install:
 
-1. Copy the binary into place: `pip install ...` (or `uv tool install` from a checkout).
+1. Install the CLI: `uv tool install --from /path/to/door-sync-checkout door-sync` (or build a wheel with `uv build` and install on the Pi with `uv tool install ./dist/door_sync-*.whl`).
 2. Create the service user: `sudo useradd --system --no-create-home door-sync`.
 3. Create the config and ops directories:
    ```bash
@@ -975,14 +976,13 @@ uv run ruff format --check .
 
 Expected: no changes needed. If anything is misformatted, run `uv run ruff format .` and commit the result.
 
-- [ ] **Step 3: Run strict type check**
+- [ ] **Step 3: Run type check**
 
 ```bash
-uv run mypy --strict src tests
+uv run pyrefly check
 ```
 
-Expected: no errors. Common things to watch for:
-- `scheduler.py`'s `_handler(signum: int, _frame: object)`: signal handler frame type is `types.FrameType | None`, not `object`. If mypy complains, change to `_frame: types.FrameType | None` and add `import types`. The standard library `signal.signal` accepts a callable matching `_HANDLER`, which uses `FrameType | None`.
+Expected: no errors. Note: `pyrefly` is the configured type checker for this project (see `[tool.pyrefly]` in `pyproject.toml`). Common things to watch for:
 - `ReconcileFn` Protocol may need `@runtime_checkable` if any code does `isinstance` checks; we don't, so leave it off.
 
 - [ ] **Step 4: Run the full test suite**
