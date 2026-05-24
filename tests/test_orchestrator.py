@@ -6,6 +6,7 @@ document what orchestrator.reconcile actually depends on.
 """
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -89,6 +90,7 @@ class FakeUnifiClient:
                 active=True,
                 policy=m.target_policy,
             )
+
         def _require(contact_id: int, op: str) -> UnifiUser:
             user = by_contact.get(contact_id)
             if user is None:
@@ -185,19 +187,19 @@ def _patch_clients(
     return holder
 
 
-def test_happy_path_no_drift(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_happy_path_no_drift(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = _config(tmp_path)
     # 12 baseline active users (above SafetyThresholds.baseline_floor=10)
     members = [
-        CiviMember(contact_id=i, display_name=f"User {i}",
-                   card_id=0x1000 + i, membership_types=["Gold"])
+        CiviMember(
+            contact_id=i, display_name=f"User {i}", card_id=0x1000 + i, membership_types=["Gold"]
+        )
         for i in range(1, 13)
     ]
     users = [
-        UnifiUser(contact_id=i, display_name=f"User {i}",
-                  card_id=0x1000 + i, active=True, policy="p1")
+        UnifiUser(
+            contact_id=i, display_name=f"User {i}", card_id=0x1000 + i, active=True, policy="p1"
+        )
         for i in range(1, 13)
     ]
     _patch_clients(monkeypatch, civi_members=members, unifi_users=users)
@@ -224,17 +226,18 @@ def test_apply_with_drift_calls_unifi_apply(
 ) -> None:
     cfg = _config(tmp_path)
     members = [
-        CiviMember(contact_id=i, display_name=f"User {i}",
-                   card_id=0x1000 + i, membership_types=["Gold"])
+        CiviMember(
+            contact_id=i, display_name=f"User {i}", card_id=0x1000 + i, membership_types=["Gold"]
+        )
         for i in range(1, 12)
     ]
     members.append(  # new member not yet in UniFi
-        CiviMember(contact_id=99, display_name="New",
-                   card_id=0x9999, membership_types=["Gold"])
+        CiviMember(contact_id=99, display_name="New", card_id=0x9999, membership_types=["Gold"])
     )
     users = [
-        UnifiUser(contact_id=i, display_name=f"User {i}",
-                  card_id=0x1000 + i, active=True, policy="p1")
+        UnifiUser(
+            contact_id=i, display_name=f"User {i}", card_id=0x1000 + i, active=True, policy="p1"
+        )
         for i in range(1, 12)
     ]
     holder = _patch_clients(monkeypatch, civi_members=members, unifi_users=users)
@@ -254,13 +257,15 @@ def test_safety_halt_writes_alert_flag_and_audit_halt(
     cfg = _config(tmp_path)
     # 20 users in UniFi; CiviCRM returns only 10 — would deactivate 50% > 15% threshold
     members = [
-        CiviMember(contact_id=i, display_name=f"User {i}",
-                   card_id=0x1000 + i, membership_types=["Gold"])
+        CiviMember(
+            contact_id=i, display_name=f"User {i}", card_id=0x1000 + i, membership_types=["Gold"]
+        )
         for i in range(1, 11)
     ]
     users = [
-        UnifiUser(contact_id=i, display_name=f"User {i}",
-                  card_id=0x1000 + i, active=True, policy="p1")
+        UnifiUser(
+            contact_id=i, display_name=f"User {i}", card_id=0x1000 + i, active=True, policy="p1"
+        )
         for i in range(1, 21)
     ]
     holder = _patch_clients(monkeypatch, civi_members=members, unifi_users=users)
@@ -289,17 +294,18 @@ def test_idempotency_canary_second_cycle_is_noop(
     yield empty diff sets — architecture §8."""
     cfg = _config(tmp_path)
     members = [
-        CiviMember(contact_id=i, display_name=f"User {i}",
-                   card_id=0x1000 + i, membership_types=["Gold"])
+        CiviMember(
+            contact_id=i, display_name=f"User {i}", card_id=0x1000 + i, membership_types=["Gold"]
+        )
         for i in range(1, 13)
     ]
     members.append(
-        CiviMember(contact_id=99, display_name="New",
-                   card_id=0x9999, membership_types=["Gold"])
+        CiviMember(contact_id=99, display_name="New", card_id=0x9999, membership_types=["Gold"])
     )
     users = [
-        UnifiUser(contact_id=i, display_name=f"User {i}",
-                  card_id=0x1000 + i, active=True, policy="p1")
+        UnifiUser(
+            contact_id=i, display_name=f"User {i}", card_id=0x1000 + i, active=True, policy="p1"
+        )
         for i in range(1, 13)
     ]
 
@@ -340,17 +346,18 @@ def test_dry_run_apply_does_not_touch_state_or_alert(
 ) -> None:
     cfg = _config(tmp_path)
     members = [
-        CiviMember(contact_id=i, display_name=f"User {i}",
-                   card_id=0x1000 + i, membership_types=["Gold"])
+        CiviMember(
+            contact_id=i, display_name=f"User {i}", card_id=0x1000 + i, membership_types=["Gold"]
+        )
         for i in range(1, 13)
     ]
     members.append(
-        CiviMember(contact_id=99, display_name="New",
-                   card_id=0x9999, membership_types=["Gold"])
+        CiviMember(contact_id=99, display_name="New", card_id=0x9999, membership_types=["Gold"])
     )
     users = [
-        UnifiUser(contact_id=i, display_name=f"User {i}",
-                  card_id=0x1000 + i, active=True, policy="p1")
+        UnifiUser(
+            contact_id=i, display_name=f"User {i}", card_id=0x1000 + i, active=True, policy="p1"
+        )
         for i in range(1, 13)
     ]
     holder = _patch_clients(monkeypatch, civi_members=members, unifi_users=users)
@@ -375,13 +382,15 @@ def test_dry_run_halt_writes_alert_flag_but_not_state(
 ) -> None:
     cfg = _config(tmp_path)
     members = [
-        CiviMember(contact_id=i, display_name=f"User {i}",
-                   card_id=0x1000 + i, membership_types=["Gold"])
+        CiviMember(
+            contact_id=i, display_name=f"User {i}", card_id=0x1000 + i, membership_types=["Gold"]
+        )
         for i in range(1, 11)
     ]
     users = [
-        UnifiUser(contact_id=i, display_name=f"User {i}",
-                  card_id=0x1000 + i, active=True, policy="p1")
+        UnifiUser(
+            contact_id=i, display_name=f"User {i}", card_id=0x1000 + i, active=True, policy="p1"
+        )
         for i in range(1, 21)
     ]
     _patch_clients(monkeypatch, civi_members=members, unifi_users=users)
@@ -416,3 +425,36 @@ def test_civicrm_exception_propagates_with_no_side_effects(
     assert not (tmp_path / "audit.jsonl").exists()
     assert not (tmp_path / "state.json").exists()
     assert not (tmp_path / "alert.flag").exists()
+
+
+def test_handle_crash_logs_audits_and_raises_alert(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    cfg = _config(tmp_path)
+    exc = ConnectionError("boom")
+
+    with caplog.at_level(logging.ERROR, logger="door_sync.orchestrator"):
+        orchestrator.handle_crash(exc, paths=cfg.ops_paths)
+
+    audit_line = json.loads(cfg.ops_paths.audit_jsonl.read_text().splitlines()[0])
+    assert audit_line["event"] == "crashed"
+    assert audit_line["exception"]["class"] == "ConnectionError"
+    assert audit_line["exception"]["message"] == "boom"
+
+    assert cfg.ops_paths.alert_flag.exists()
+    flag_text = cfg.ops_paths.alert_flag.read_text()
+    assert "crashed" in flag_text
+    assert "ConnectionError" in flag_text
+    assert "boom" in flag_text
+
+
+def test_handle_crash_truncates_long_exception_messages(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    long_msg = "x" * 500
+    orchestrator.handle_crash(RuntimeError(long_msg), paths=cfg.ops_paths)
+
+    flag_text = cfg.ops_paths.alert_flag.read_text()
+    # Truncation matches __main__'s current 200-char + "..." behavior.
+    assert "..." in flag_text
+    assert "x" * 200 in flag_text
+    assert "x" * 201 not in flag_text
