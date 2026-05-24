@@ -1,18 +1,15 @@
 """door-sync CLI entry point.
 
 Subcommands:
-  run --once [--dry-run]   Execute one reconcile cycle and exit.
-  show-diff                Read-only: fetch + compute diff, pretty-print, exit.
-  validate-config          Load config, print issues, exit 0 (ok) or 1 (bad).
+  run [--once] [--dry-run]  Run daemon loop (default) or one cycle (--once).
+  show-diff                 Read-only: fetch + compute diff, pretty-print, exit.
+  validate-config           Load config, print issues, exit 0 (ok) or 1 (bad).
 
 Exit codes:
   0  success
   1  cycle halted by safety guards; config validation failed
   2  cycle crashed (exception escaped orchestrator); show-diff fetch failed
- 64  CLI usage error (argparse default; also bare `run` without --once)
-
-Daemon mode (loop, SIGTERM handling) is not yet implemented — that arrives
-with the scheduler slice.
+ 64  CLI usage error (argparse default)
 """
 
 import argparse
@@ -20,13 +17,13 @@ import logging
 import sys
 from pathlib import Path
 
-from door_sync import cli, orchestrator, reconciler, tier_mapping
+from door_sync import cli, orchestrator, reconciler, scheduler, tier_mapping
 from door_sync import config as config_mod
 from door_sync.civicrm.client import CivicrmClient
 from door_sync.unifi.client import UnifiClient
 
 # Expose config_mod so tests can monkeypatch it via main_mod.config_mod.
-__all__ = ["config_mod", "CivicrmClient", "UnifiClient", "main"]
+__all__ = ["config_mod", "CivicrmClient", "UnifiClient", "scheduler", "main"]
 
 _logger = logging.getLogger("door_sync")
 
@@ -101,15 +98,14 @@ def _setup_logging(*, verbose: bool) -> None:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    if not args.once:
-        print("daemon mode not yet implemented; pass --once", file=sys.stderr)
-        return 64
-
     try:
         config = config_mod.load(config_path=args.config, env_path=args.env_file)
     except config_mod.ConfigError as e:
         cli.print_config_issues(e.issues, file=sys.stderr)
         return 1
+
+    if not args.once:
+        return scheduler.run_forever(config, dry_run=args.dry_run)
 
     try:
         result = orchestrator.reconcile(config, dry_run=args.dry_run)
