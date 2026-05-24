@@ -136,12 +136,14 @@ def cmd_show_diff(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        civicrm = CivicrmClient(config.civicrm)
-        unifi = UnifiClient(config.unifi, dry_run=True)
-        members = civicrm.fetch_active()
-        resolved = [tier_mapping.resolve(m, config.tier_mapping) for m in members]
-        users = unifi.fetch_users()
-        diff = reconciler.compute_diff(resolved, users)
+        with (
+            CivicrmClient(config.civicrm) as civicrm,
+            UnifiClient(config.unifi, dry_run=True) as unifi,
+        ):
+            members = civicrm.fetch_active()
+            resolved = [tier_mapping.resolve(m, config.tier_mapping) for m in members]
+            users = unifi.fetch_users()
+            diff = reconciler.compute_diff(resolved, users)
     except Exception:
         _logger.exception("show-diff failed")
         return 2
