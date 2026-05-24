@@ -34,6 +34,7 @@ All tooling goes through `uv run` — the venv is managed by uv, not pip.
 - **Card ID redaction.** Logs show last-4 only. Never log a full card ID at any level (architecture.md §11).
 - **Dry-run is sacred.** Dry-run flips a flag inside `UnifiClient` that turns writes into no-ops. Pure modules behave identically in dry-run and live — do not branch on dry-run in pure code.
 - **Fail-secure on safety guards.** Any guard firing means zero writes that cycle. No partial application.
+- **Crash logging uses `_logger.error("...", exc_info=exc)`, not `_logger.exception(...)`.** `exception()` reads `sys.exc_info()`, which is `(None, None, None)` outside an active `except` clause — the traceback would be silently dropped. Python 3.5+ accepts an exception instance directly via `exc_info=`. See `orchestrator.handle_crash` for the reference impl.
 
 ## Testing
 
@@ -47,6 +48,8 @@ All tooling goes through `uv run` — the venv is managed by uv, not pip.
 ## PR review findings (Copilot, CodeQL, etc.)
 
 Before acting on a bot finding, read the flagged code and confirm the issue is real. Bots have false positives and sometimes propose suboptimal fixes — verify the flagged lines and surrounding context first, then decide whether to apply their suggestion, apply a different fix, or push back.
+
+Recurring true-positive: CodeQL `py/ineffectual-statement` flags `...` (Ellipsis) in `Protocol` method bodies. Use a docstring instead — it's exempt from the rule and documents the contract. Example: `def __call__(self, …) -> X: """One-line description."""`
 
 ## Config
 
