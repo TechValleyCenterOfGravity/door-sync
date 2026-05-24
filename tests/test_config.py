@@ -3,7 +3,6 @@ from pathlib import Path
 
 import pytest
 
-import door_sync.config as config_mod
 from door_sync.config import (
     _DEFAULT_OPS_PATHS,
     CivicrmConfig,
@@ -813,7 +812,7 @@ def test_ops_paths_default_when_section_omitted(tmp_path: Path) -> None:
     """If [ops] is missing entirely, defaults from architecture §11 apply."""
     cfg_path, env_path = _write_minimal_valid(tmp_path)
 
-    config = config_mod.load(config_path=cfg_path, env_path=env_path)
+    config = load(config_path=cfg_path, env_path=env_path)
 
     assert config.ops_paths.audit_jsonl == Path("/var/log/door-sync/audit.jsonl")
     assert config.ops_paths.state_json == Path("/var/lib/door-sync/state.json")
@@ -831,7 +830,7 @@ def test_ops_paths_explicit_values_override_defaults(tmp_path: Path) -> None:
         ),
     )
 
-    config = config_mod.load(config_path=cfg_path, env_path=env_path)
+    config = load(config_path=cfg_path, env_path=env_path)
 
     assert config.ops_paths.audit_jsonl == Path("/tmp/a.jsonl")
     assert config.ops_paths.state_json == Path("/tmp/s.json")
@@ -847,8 +846,8 @@ def test_ops_paths_rejects_non_string_value(tmp_path: Path) -> None:
         ),
     )
 
-    with pytest.raises(config_mod.ConfigError) as excinfo:
-        config_mod.load(config_path=cfg_path, env_path=env_path)
+    with pytest.raises(ConfigError) as excinfo:
+        load(config_path=cfg_path, env_path=env_path)
 
     paths = [issue.path for issue in excinfo.value.issues]
     assert "ops.audit_jsonl" in paths
