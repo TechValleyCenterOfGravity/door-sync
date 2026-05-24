@@ -9,7 +9,7 @@ CiviCRM → UniFi Access reconciliation daemon. Runs on a Raspberry Pi under sys
 ```bash
 uv sync                                       # install
 uv run pytest                                 # tests
-uv run mypy --strict src tests                # type check (strict)
+uv run pyrefly check                          # type check
 uv run ruff check .                           # lint
 uv run door-sync run --once                   # one reconcile cycle, exit
 uv run door-sync run --once --dry-run         # compute + log diff; no UniFi writes
@@ -27,7 +27,7 @@ All tooling goes through `uv run` — the venv is managed by uv, not pip.
 
 - **No asyncio.** Sync `httpx` only. Do not "modernize" to async; the design rejects it deliberately (architecture.md §3).
 - **CivicrmClient / UnifiClient as context managers.** Both own an `httpx.Client` and must be used inside `with` blocks (or `close()` in `finally`) to avoid socket/FD leaks. The orchestrator and CLI handlers already do this — match the pattern.
-- **Don't mix `import X` and `from X import Y` for the same module.** CodeQL flags it post-PR; local `ruff`/`mypy` don't. Pick one style per file.
+- **Don't mix `import X` and `from X import Y` for the same module.** CodeQL flags it post-PR; local `ruff`/`pyrefly` don't. Pick one style per file.
 - **Pure modules stay pure.** `reconciler.py`, `safety.py`, `tier_mapping.py` take dataclasses, return dataclasses. No logging, no config lookups, no HTTP, no exceptions on data issues — return a sentinel instead (architecture.md §5).
 - **Frozen dataclasses.** All domain models in `models.py` are `@dataclass(frozen=True)`. Never mutate; construct a new instance.
 - **Strict layering.** Nothing imports `orchestrator` except `scheduler` and (future) `webhook`. See dependency table in architecture.md §4.
@@ -42,7 +42,7 @@ All tooling goes through `uv run` — the venv is managed by uv, not pip.
 
 ## IDE diagnostics
 
-- mypy is the authoritative type checker; Pyright in the IDE lags on new packages and false-flags `__exit__` protocol args / underscore-prefixed unused params. When `uv run mypy --strict src tests`, `ruff check`, and `pytest` are all green, trust them.
+- pyrefly is the authoritative type checker; Pyright in the IDE lags on new packages and false-flags `__exit__` protocol args / underscore-prefixed unused params. When `uv run pyrefly check`, `ruff check`, and `pytest` are all green, trust them.
 
 ## PR review findings (Copilot, CodeQL, etc.)
 
