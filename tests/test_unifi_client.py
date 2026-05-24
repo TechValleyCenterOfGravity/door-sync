@@ -579,9 +579,10 @@ def test_apply_dry_run_makes_no_writes(
     messages = [r.message for r in caplog.records]
     assert any("would-add" in m for m in messages)
     assert any("would-deactivate" in m for m in messages)
-    # Card IDs are redacted.
+    # Card IDs are redacted: "1234" must never appear in a message unless
+    # the redacted "****1234" form also appears in that same message.
     assert any("****1234" in m for m in messages)
-    assert not any("1234 " in m and "****" not in m for m in messages)
+    assert not any("1234" in m and "****1234" not in m for m in messages)
     client.close()
 
 
