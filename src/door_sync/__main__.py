@@ -23,7 +23,6 @@ from pathlib import Path
 from door_sync import alert, audit, cli, orchestrator, reconciler, tier_mapping
 from door_sync import config as config_mod
 from door_sync.civicrm.client import CivicrmClient
-from door_sync.config import ConfigError
 from door_sync.unifi.client import UnifiClient
 
 # Expose config_mod so tests can monkeypatch it via main_mod.config_mod.
@@ -108,7 +107,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     try:
         config = config_mod.load(config_path=args.config, env_path=args.env_file)
-    except ConfigError as e:
+    except config_mod.ConfigError as e:
         cli.print_config_issues(e.issues, file=sys.stderr)
         return 1
 
@@ -132,7 +131,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 def cmd_show_diff(args: argparse.Namespace) -> int:
     try:
         config = config_mod.load(config_path=args.config, env_path=args.env_file)
-    except ConfigError as e:
+    except config_mod.ConfigError as e:
         cli.print_config_issues(e.issues, file=sys.stderr)
         return 1
 
@@ -154,7 +153,7 @@ def cmd_show_diff(args: argparse.Namespace) -> int:
 def cmd_validate_config(args: argparse.Namespace) -> int:
     try:
         config_mod.load(config_path=args.config, env_path=args.env_file)
-    except ConfigError as e:
+    except config_mod.ConfigError as e:
         cli.print_config_issues(e.issues, file=sys.stderr)
         return 1
     return 0
