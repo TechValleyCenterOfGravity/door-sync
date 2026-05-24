@@ -458,6 +458,29 @@ def test_fetch_users_foreign_fc_card_yields_card_id_none(
     client.close()
 
 
+def test_fetch_users_foreign_fc_warning_does_not_leak_nfc_id(
+    httpx_mock: HTTPXMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The foreign-FC warning must not log the raw nfc_id (architecture §11)."""
+    row = _user_row(contact_id=42, nfc_id="63ABCD")  # FC=0x63=99, CN=0xABCD
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page([row]),
+    )
+    with caplog.at_level(logging.WARNING, logger="door_sync.unifi.client"):
+        client = _make_client()
+        client.fetch_users()
+
+    # The warning must mention contact_id 42 but never the raw nfc_id.
+    foreign_warnings = [r for r in caplog.records if "foreign-FC" in r.message]
+    assert foreign_warnings, "expected a foreign-FC warning for the test row"
+    for rec in foreign_warnings:
+        assert "63ABCD" not in rec.message
+        assert "63abcd" not in rec.message
+    client.close()
+
+
 # --- apply preconditions & dry-run ---
 
 
