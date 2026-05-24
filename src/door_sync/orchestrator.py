@@ -24,7 +24,7 @@ def handle_crash(exc: Exception, *, paths: OpsPaths) -> None:
 
     Shared by one-shot (--once) and daemon mode so behavior stays symmetric.
     """
-    _logger.exception("reconcile crashed: %s", exc)
+    _logger.error("reconcile crashed", exc_info=exc)
     audit.log_crashed(exc, path=paths.audit_jsonl)
     exc_msg = str(exc)
     if len(exc_msg) > 200:
