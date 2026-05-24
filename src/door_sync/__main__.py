@@ -20,7 +20,7 @@ import logging
 import sys
 from pathlib import Path
 
-from door_sync import alert, audit, cli, orchestrator, reconciler, tier_mapping
+from door_sync import cli, orchestrator, reconciler, tier_mapping
 from door_sync import config as config_mod
 from door_sync.civicrm.client import CivicrmClient
 from door_sync.unifi.client import UnifiClient
@@ -114,15 +114,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     try:
         result = orchestrator.reconcile(config, dry_run=args.dry_run)
     except Exception as exc:
-        _logger.exception("orchestrator crashed")
-        audit.log_crashed(exc, path=config.ops_paths.audit_jsonl)
-        exc_msg = str(exc)
-        if len(exc_msg) > 200:
-            exc_msg = exc_msg[:200] + "..."
-        alert.raise_(
-            f"crashed: {type(exc).__name__}: {exc_msg}",
-            path=config.ops_paths.alert_flag,
-        )
+        orchestrator.handle_crash(exc, paths=config.ops_paths)
         return 2
 
     return 1 if result.halted else 0
