@@ -1,0 +1,26 @@
+[Unit]
+Description=door-sync: CiviCRM to UniFi Access reconciler
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=door-sync
+Group=door-sync
+EnvironmentFile=/etc/door-sync/env
+Environment=DOOR_SYNC_CONFIG_DIR=/etc/door-sync
+ExecStart=/usr/local/bin/door-sync run
+Restart=on-failure
+RestartSec=30s
+StandardOutput=journal
+StandardError=journal
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/log/door-sync /var/lib/door-sync /var/run/door-sync
+
+[Install]
+WantedBy=multi-user.target
