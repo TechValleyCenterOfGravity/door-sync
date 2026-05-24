@@ -58,6 +58,8 @@ Two-file split: secrets in env (`.env` dev, `/etc/door-sync/env` prod, mode 0400
 <!-- Last verified against: uv 0.11.15, ruff 0.15.13, pyrefly 1.0.0, ty 0.0.38, pytest 9.0.3 -->
 <!-- Full explanations: https://pydevtools.com/handbook/explanation/modern-python-project-setup-guide-for-ai-assistants/ -->
 
+When working with Python, invoke the relevant /astral:<skill> for uv, and ruff to ensure best practices are followed.
+
 ## Package management
 
 This project uses uv. Do not use pip, pip-tools, poetry, or conda.
