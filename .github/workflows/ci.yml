@@ -30,6 +30,6 @@ jobs:
     - name: Format check
       run: uv run ruff check --output-format=github .
     - name: Type check
-      run: uv run mypy src tests
+      run: uv run pyrefly check --output-format=github
     - name: Test
       run: uv run pytest
