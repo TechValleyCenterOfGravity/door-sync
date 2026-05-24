@@ -24,7 +24,8 @@ _logger = logging.getLogger("door_sync.scheduler")
 
 
 class ReconcileFn(Protocol):
-    def __call__(self, config: Config, *, dry_run: bool) -> ReconcileResult: ...
+    def __call__(self, config: Config, *, dry_run: bool) -> ReconcileResult:
+        """Run one reconcile cycle. Production impl: orchestrator.reconcile."""
 
 
 def _install_signal_handlers(event: threading.Event) -> None:
