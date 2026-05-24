@@ -2,17 +2,19 @@
 
 CiviCRM → UniFi Access reconciliation daemon. Runs on a Raspberry Pi under systemd.
 
-**Status: in active development.** Pure modules (reconciler, safety, tier_mapping), the CiviCRM client, and the UniFi Access client are merged. Orchestrator, scheduler, audit, state, alert still TBD. Architecture is locked; see `docs/architecture.md` before adding code.
+**Status: in active development.** Pure modules, CiviCRM client, UniFi Access client, orchestrator + ops stubs (audit JSONL, state JSON, alert flag-file) are merged. Scheduler (daemon loop, SIGTERM handling) and a real alert transport (SMTP/webhook) are the remaining slices. Architecture is locked; see `docs/architecture.md` before adding code.
 
 ## Commands
 
 ```bash
-uv sync                       # install
-uv run pytest                 # tests
-uv run mypy --strict src tests   # type check (strict)
-uv run ruff check .           # lint
-uv run door-sync --once       # one reconcile cycle, exit
-uv run door-sync --dry-run    # compute + log diff; no UniFi writes
+uv sync                                       # install
+uv run pytest                                 # tests
+uv run mypy --strict src tests                # type check (strict)
+uv run ruff check .                           # lint
+uv run door-sync run --once                   # one reconcile cycle, exit
+uv run door-sync run --once --dry-run         # compute + log diff; no UniFi writes
+uv run door-sync show-diff                    # read-only: print computed diff
+uv run door-sync validate-config              # load config, print issues, exit
 ```
 
 All tooling goes through `uv run` — the venv is managed by uv, not pip.

@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from door_sync.config import (
+    _DEFAULT_OPS_PATHS,
     CivicrmConfig,
     Config,
     ConfigError,
@@ -34,6 +35,7 @@ def test_config_is_frozen() -> None:
         unifi=UnifiConfig(host="https://y", api_key="k", tls_fingerprint="AB" * 32, facility_code=0),
         safety=SafetyThresholds(),
         tier_mapping=TierMapping(rules={}),
+        ops_paths=_DEFAULT_OPS_PATHS,
     )
     with pytest.raises(FrozenInstanceError):
         c.cadence_seconds = 60  # type: ignore[misc]
@@ -210,7 +212,7 @@ def test_missing_toml_file_raises_config_error(
 # --- validator tests ---
 
 
-def _write_minimal_valid(tmp_path: Path) -> tuple[Path, Path]:
+def _write_minimal_valid(tmp_path: Path, extra_toml: str = "") -> tuple[Path, Path]:
     cfg = tmp_path / "config.toml"
     env = tmp_path / "env"
     cfg.write_text(
@@ -222,6 +224,7 @@ def _write_minimal_valid(tmp_path: Path) -> tuple[Path, Path]:
         'host = "https://unifi.example.org"\n'
         'tls_fingerprint = "' + ("AB:" * 31 + "AB") + '"\n'
         "facility_code = 42\n"
+        + extra_toml
     )
     env.write_text("CIVICRM_API_KEY=civikey\nUNIFI_API_KEY=unifikey\n")
     return cfg, env
@@ -732,6 +735,10 @@ def test_example_files_parse(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "Day Pass" in result.tier_mapping.rules
     assert result.tier_mapping.rules["Day Pass"].resolution == "day-pass"
     assert result.tier_mapping.rules["Day Pass"].target_policy is None
+    # ops_paths — all three fields from the example file
+    assert result.ops_paths.audit_jsonl == Path("/var/log/door-sync/audit.jsonl")
+    assert result.ops_paths.state_json == Path("/var/lib/door-sync/state.json")
+    assert result.ops_paths.alert_flag == Path("/var/run/door-sync/alert.flag")
 
 
 # --- facility_code tests ---
@@ -796,3 +803,51 @@ def test_load_accepts_facility_code_boundary_values(
     config_path.write_text(content)
     result = load(config_path=config_path, env_path=env_path)
     assert result.unifi.facility_code == code
+
+
+# --- ops_paths tests ---
+
+
+def test_ops_paths_default_when_section_omitted(tmp_path: Path) -> None:
+    """If [ops] is missing entirely, defaults from architecture §11 apply."""
+    cfg_path, env_path = _write_minimal_valid(tmp_path)
+
+    config = load(config_path=cfg_path, env_path=env_path)
+
+    assert config.ops_paths.audit_jsonl == Path("/var/log/door-sync/audit.jsonl")
+    assert config.ops_paths.state_json == Path("/var/lib/door-sync/state.json")
+    assert config.ops_paths.alert_flag == Path("/var/run/door-sync/alert.flag")
+
+
+def test_ops_paths_explicit_values_override_defaults(tmp_path: Path) -> None:
+    cfg_path, env_path = _write_minimal_valid(
+        tmp_path,
+        extra_toml=(
+            "\n[ops]\n"
+            'audit_jsonl = "/tmp/a.jsonl"\n'
+            'state_json  = "/tmp/s.json"\n'
+            'alert_flag  = "/tmp/f.flag"\n'
+        ),
+    )
+
+    config = load(config_path=cfg_path, env_path=env_path)
+
+    assert config.ops_paths.audit_jsonl == Path("/tmp/a.jsonl")
+    assert config.ops_paths.state_json == Path("/tmp/s.json")
+    assert config.ops_paths.alert_flag == Path("/tmp/f.flag")
+
+
+def test_ops_paths_rejects_non_string_value(tmp_path: Path) -> None:
+    cfg_path, env_path = _write_minimal_valid(
+        tmp_path,
+        extra_toml=(
+            "\n[ops]\n"
+            "audit_jsonl = 42\n"
+        ),
+    )
+
+    with pytest.raises(ConfigError) as excinfo:
+        load(config_path=cfg_path, env_path=env_path)
+
+    paths = [issue.path for issue in excinfo.value.issues]
+    assert "ops.audit_jsonl" in paths

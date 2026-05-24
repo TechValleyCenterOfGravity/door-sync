@@ -68,3 +68,11 @@ class SafetyThresholds:
     mass_add_pct: float = 0.25
     mass_policy_pct: float = 0.20
     baseline_floor: int = 10
+
+
+@dataclass(frozen=True)
+class State:
+    last_success_iso: str | None
+    last_halt_iso: str | None
+    last_halt_reason: str | None
+    run_count: int

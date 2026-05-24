@@ -316,6 +316,7 @@ The single entry point to a reconciliation cycle:
 def reconcile(config: Config, *, dry_run: bool) -> ReconcileResult:
     civicrm = CivicrmClient(config.civicrm)
     unifi = UnifiClient(config.unifi, dry_run=dry_run)
+    paths = config.ops_paths
 
     civi_members = civicrm.fetch_active()
     resolved = [tier_mapping.resolve(m, config.tier_mapping) for m in civi_members]
@@ -326,13 +327,20 @@ def reconcile(config: Config, *, dry_run: bool) -> ReconcileResult:
     check = safety.check(diff, baseline=active_baseline, thresholds=config.safety)
 
     if check.halted:
-        audit.log_halt(check.reason, diff)
-        alert.send(check.reason)
+        audit.log_halt(check.reason, diff, dry_run=dry_run,
+                       path=paths.audit_jsonl,
+                       facility_code=config.unifi.facility_code)
+        alert.raise_(check.reason, path=paths.alert_flag)
+        if not dry_run:
+            state.write_halt(paths.state_json, check.reason)
         return ReconcileResult(halted=True, reason=check.reason, diff=diff)
 
     unifi.apply(diff)
-    audit.log_applied(diff)
-    state.write_last_success()
+    audit.log_applied(diff, dry_run=dry_run, path=paths.audit_jsonl,
+                      facility_code=config.unifi.facility_code)
+    if not dry_run:
+        state.write_success(paths.state_json)
+        alert.clear(path=paths.alert_flag)
     return ReconcileResult(halted=False, reason=None, diff=diff)
 ```
 
@@ -386,8 +394,7 @@ These decisions are intentionally deferred. When implementing them, update this 
 |---|---|---|
 | CiviCRM client API surface (method signatures) | `civicrm/client.py` + new §14 here | Determined by API4 query needs |
 | UniFi client API surface (method signatures) | `unifi/client.py` + new §15 here | Constrained by UniFi Access API capabilities |
-| Audit log entry schema | `audit.py` + new §16 here | JSON line per record; fields TBD |
-| Alerting transport | `alert.py` + new §17 here | Likely SMTP or webhook to existing space ops channel |
+| Alerting transport | `alert.py` + new §17 here | Flag-file stub is shipped (presence = active alert, contents = reason); SMTP/webhook transport TBD |
 | Retry/backoff specifics | inside both clients | Per design guide §8 |
 | Packaging and deployment specifics | `pyproject.toml` + README | Standard pip-into-venv expected |
 
