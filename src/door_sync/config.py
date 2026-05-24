@@ -18,7 +18,7 @@ from typing import Any
 from door_sync.models import SafetyThresholds, TierMapping, TierRule
 
 _FINGERPRINT_RE = re.compile(
-    r"^([0-9A-Fa-f]{2}:){31}[0-9A-Fa-f]{2}$|^[0-9A-Fa-f]{64}$"
+    r"^(?:(?:[0-9A-Fa-f]{2}:){31}[0-9A-Fa-f]{2}|[0-9A-Fa-f]{64})$"
 )
 
 _VALID_RESOLUTIONS = frozenset({"tier", "none", "day-pass"})
