@@ -89,8 +89,17 @@ class FakeUnifiClient:
                 active=True,
                 policy=m.target_policy,
             )
+        def _require(contact_id: int, op: str) -> UnifiUser:
+            user = by_contact.get(contact_id)
+            if user is None:
+                raise AssertionError(
+                    f"FakeUnifiClient.apply: {op} requested for contact "
+                    f"{contact_id} not present in fake user store"
+                )
+            return user
+
         for m, _ in diff.to_update_credential:
-            existing = by_contact[m.contact_id]
+            existing = _require(m.contact_id, "to_update_credential")
             by_contact[m.contact_id] = UnifiUser(
                 contact_id=existing.contact_id,
                 display_name=m.display_name,
@@ -99,7 +108,7 @@ class FakeUnifiClient:
                 policy=existing.policy,
             )
         for m, _ in diff.to_update_policy:
-            existing = by_contact[m.contact_id]
+            existing = _require(m.contact_id, "to_update_policy")
             by_contact[m.contact_id] = UnifiUser(
                 contact_id=existing.contact_id,
                 display_name=existing.display_name,
@@ -108,7 +117,7 @@ class FakeUnifiClient:
                 policy=m.target_policy,
             )
         for u in diff.to_deactivate:
-            existing = by_contact[u.contact_id]
+            existing = _require(u.contact_id, "to_deactivate")
             by_contact[u.contact_id] = UnifiUser(
                 contact_id=existing.contact_id,
                 display_name=existing.display_name,
