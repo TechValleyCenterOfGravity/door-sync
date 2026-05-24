@@ -60,11 +60,10 @@ def _patch_config_load(monkeypatch: pytest.MonkeyPatch, cfg: Config) -> None:
     monkeypatch.setattr(main_mod.config_mod, "load", lambda **_: cfg)
 
 
-def test_run_once_success_exits_zero(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_once_success_exits_zero(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = _build_config(tmp_path)
     _patch_config_load(monkeypatch, cfg)
+
     def _ok(c: Config, *, dry_run: bool) -> ReconcileResult:
         return ReconcileResult(halted=False, reason=None, diff=Diff([], [], [], [], []))
 
@@ -74,15 +73,12 @@ def test_run_once_success_exits_zero(
     assert rc == 0
 
 
-def test_run_once_halt_exits_one(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_once_halt_exits_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = _build_config(tmp_path)
     _patch_config_load(monkeypatch, cfg)
+
     def _halt(c: Config, *, dry_run: bool) -> ReconcileResult:
-        return ReconcileResult(
-            halted=True, reason="mass_deactivate", diff=Diff([], [], [], [], [])
-        )
+        return ReconcileResult(halted=True, reason="mass_deactivate", diff=Diff([], [], [], [], []))
 
     monkeypatch.setattr(orchestrator, "reconcile", _halt)
 
@@ -117,13 +113,44 @@ def test_run_once_crash_writes_audit_alert_exits_two(
     assert "boom" in flag.read_text()
 
 
-def test_run_without_once_returns_64(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
+def test_run_daemon_calls_scheduler(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _build_config(tmp_path)
+    _patch_config_load(monkeypatch, cfg)
+    recorded: dict[str, object] = {}
+
+    def fake_run_forever(c: Config, *, dry_run: bool) -> int:
+        recorded["config"] = c
+        recorded["dry_run"] = dry_run
+        return 0
+
+    from door_sync import scheduler
+
+    monkeypatch.setattr(scheduler, "run_forever", fake_run_forever)
+
     rc = main_mod.main(argv=["run"])
-    assert rc == 64
-    captured = capsys.readouterr()
-    assert "daemon mode not yet implemented" in captured.err
+
+    assert rc == 0
+    assert recorded["config"] is cfg
+    assert recorded["dry_run"] is False
+
+
+def test_run_daemon_with_dry_run_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _build_config(tmp_path)
+    _patch_config_load(monkeypatch, cfg)
+    recorded: dict[str, object] = {}
+
+    def fake_run_forever(_c: Config, *, dry_run: bool) -> int:
+        recorded["dry_run"] = dry_run
+        return 0
+
+    from door_sync import scheduler
+
+    monkeypatch.setattr(scheduler, "run_forever", fake_run_forever)
+
+    rc = main_mod.main(argv=["run", "--dry-run"])
+
+    assert rc == 0
+    assert recorded["dry_run"] is True
 
 
 def test_validate_config_bad_exits_one(
@@ -131,9 +158,7 @@ def test_validate_config_bad_exits_one(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     def _bad(**_: Any) -> Config:
-        raise ConfigError(
-            [ConfigIssue(path="unifi.host", message="must start with https://")]
-        )
+        raise ConfigError([ConfigIssue(path="unifi.host", message="must start with https://")])
 
     monkeypatch.setattr(main_mod.config_mod, "load", _bad)
 
@@ -144,9 +169,7 @@ def test_validate_config_bad_exits_one(
     assert "must start with https://" in captured.err
 
 
-def test_validate_config_good_exits_zero(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_validate_config_good_exits_zero(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_config_load(monkeypatch, _build_config(tmp_path))
 
     rc = main_mod.main(argv=["validate-config"])

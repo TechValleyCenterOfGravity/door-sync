@@ -8,11 +8,31 @@ Invariants:
   - Exceptions propagate — this function does not catch. __main__ does.
 """
 
+import logging
+
 from door_sync import alert, audit, reconciler, safety, state, tier_mapping
 from door_sync.civicrm.client import CivicrmClient
-from door_sync.config import Config
+from door_sync.config import Config, OpsPaths
 from door_sync.models import ReconcileResult
 from door_sync.unifi.client import UnifiClient
+
+_logger = logging.getLogger("door_sync.orchestrator")
+
+
+def handle_crash(exc: Exception, *, paths: OpsPaths) -> None:
+    """Log + audit + alert on a reconcile cycle crash.
+
+    Shared by one-shot (--once) and daemon mode so behavior stays symmetric.
+    """
+    _logger.error("reconcile crashed", exc_info=exc)
+    audit.log_crashed(exc, path=paths.audit_jsonl)
+    exc_msg = str(exc)
+    if len(exc_msg) > 200:
+        exc_msg = exc_msg[:200] + "..."
+    alert.raise_(
+        f"crashed: {type(exc).__name__}: {exc_msg}",
+        path=paths.alert_flag,
+    )
 
 
 def reconcile(config: Config, *, dry_run: bool) -> ReconcileResult:
