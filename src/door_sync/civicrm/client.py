@@ -91,7 +91,7 @@ class CivicrmClient:
                     contact_id=cid,
                     display_name=str(c["display_name"]),
                     card_id=card_id,
-                    membership_types=tuple(types_by_contact.get(cid, ())),
+                    membership_types=tuple(types_by_contact.get(cid, [])),
                 )
             )
         return result
