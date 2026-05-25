@@ -1,9 +1,7 @@
 from door_sync.models import Diff, ResolvedMember, UnifiUser
 
 
-def compute_diff(
-    resolved: list[ResolvedMember], unifi: list[UnifiUser]
-) -> Diff:
+def compute_diff(resolved: list[ResolvedMember], unifi: list[UnifiUser]) -> Diff:
     resolved_by_id: dict[int, ResolvedMember] = {r.contact_id: r for r in resolved}
     unifi_by_id: dict[int, UnifiUser] = {u.contact_id: u for u in unifi}
 
@@ -59,9 +57,9 @@ def compute_diff(
             to_update_policy.append((r, u))
 
     return Diff(
-        to_add=to_add,
-        to_update_credential=to_update_credential,
-        to_update_policy=to_update_policy,
-        to_deactivate=to_deactivate,
-        unmapped=unmapped,
+        to_add=tuple(to_add),
+        to_update_credential=tuple(to_update_credential),
+        to_update_policy=tuple(to_update_policy),
+        to_deactivate=tuple(to_deactivate),
+        unmapped=tuple(unmapped),
     )

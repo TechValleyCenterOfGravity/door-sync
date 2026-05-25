@@ -36,11 +36,11 @@ def _u(contact_id: int = 1, active: bool = True) -> UnifiUser:
 
 def _empty_diff() -> Diff:
     return Diff(
-        to_add=[],
-        to_update_credential=[],
-        to_update_policy=[],
-        to_deactivate=[],
-        unmapped=[],
+        to_add=(),
+        to_update_credential=(),
+        to_update_policy=(),
+        to_deactivate=(),
+        unmapped=(),
     )
 
 
@@ -60,11 +60,11 @@ def test_clean_diff_not_halted() -> None:
 
 def test_unmapped_non_empty_halts() -> None:
     diff = Diff(
-        to_add=[],
-        to_update_credential=[],
-        to_update_policy=[],
-        to_deactivate=[],
-        unmapped=[_r(resolution="unmapped", target_policy=None)],
+        to_add=(),
+        to_update_credential=(),
+        to_update_policy=(),
+        to_deactivate=(),
+        unmapped=(_r(resolution="unmapped", target_policy=None),),
     )
     result = check(diff, baseline=_HIGH_BASELINE, thresholds=SafetyThresholds())
     assert result.halted is True
@@ -77,11 +77,11 @@ def test_unmapped_non_empty_halts() -> None:
 
 def test_duplicate_card_in_to_add_halts() -> None:
     diff = Diff(
-        to_add=[_r(contact_id=1, card_id=42), _r(contact_id=2, card_id=42)],
-        to_update_credential=[],
-        to_update_policy=[],
-        to_deactivate=[],
-        unmapped=[],
+        to_add=(_r(contact_id=1, card_id=42), _r(contact_id=2, card_id=42)),
+        to_update_credential=(),
+        to_update_policy=(),
+        to_deactivate=(),
+        unmapped=(),
     )
     result = check(diff, baseline=_HIGH_BASELINE, thresholds=SafetyThresholds())
     assert result.halted is True
@@ -91,11 +91,11 @@ def test_duplicate_card_in_to_add_halts() -> None:
 
 def test_duplicate_card_across_add_and_update_credential_halts() -> None:
     diff = Diff(
-        to_add=[_r(contact_id=1, card_id=42)],
-        to_update_credential=[(_r(contact_id=2, card_id=42), _u(contact_id=2))],
-        to_update_policy=[],
-        to_deactivate=[],
-        unmapped=[],
+        to_add=(_r(contact_id=1, card_id=42),),
+        to_update_credential=((_r(contact_id=2, card_id=42), _u(contact_id=2)),),
+        to_update_policy=(),
+        to_deactivate=(),
+        unmapped=(),
     )
     result = check(diff, baseline=_HIGH_BASELINE, thresholds=SafetyThresholds())
     assert result.halted is True
@@ -104,11 +104,11 @@ def test_duplicate_card_across_add_and_update_credential_halts() -> None:
 
 def test_none_card_ids_dont_count_as_duplicates() -> None:
     diff = Diff(
-        to_add=[_r(contact_id=1, card_id=None), _r(contact_id=2, card_id=None)],
-        to_update_credential=[],
-        to_update_policy=[],
-        to_deactivate=[],
-        unmapped=[],
+        to_add=(_r(contact_id=1, card_id=None), _r(contact_id=2, card_id=None)),
+        to_update_credential=(),
+        to_update_policy=(),
+        to_deactivate=(),
+        unmapped=(),
     )
     result = check(diff, baseline=_HIGH_BASELINE, thresholds=SafetyThresholds())
     assert result.halted is False
@@ -119,11 +119,11 @@ def test_none_card_ids_dont_count_as_duplicates() -> None:
 
 def test_negative_card_id_halts() -> None:
     diff = Diff(
-        to_add=[_r(card_id=-1)],
-        to_update_credential=[],
-        to_update_policy=[],
-        to_deactivate=[],
-        unmapped=[],
+        to_add=(_r(card_id=-1),),
+        to_update_credential=(),
+        to_update_policy=(),
+        to_deactivate=(),
+        unmapped=(),
     )
     result = check(diff, baseline=_HIGH_BASELINE, thresholds=SafetyThresholds())
     assert result.halted is True
@@ -132,11 +132,11 @@ def test_negative_card_id_halts() -> None:
 
 def test_card_id_above_65535_halts() -> None:
     diff = Diff(
-        to_add=[_r(card_id=70000)],
-        to_update_credential=[],
-        to_update_policy=[],
-        to_deactivate=[],
-        unmapped=[],
+        to_add=(_r(card_id=70000),),
+        to_update_credential=(),
+        to_update_policy=(),
+        to_deactivate=(),
+        unmapped=(),
     )
     result = check(diff, baseline=_HIGH_BASELINE, thresholds=SafetyThresholds())
     assert result.halted is True
@@ -145,11 +145,11 @@ def test_card_id_above_65535_halts() -> None:
 
 def test_card_id_at_boundary_0_and_65535_is_valid() -> None:
     diff = Diff(
-        to_add=[_r(contact_id=1, card_id=0), _r(contact_id=2, card_id=65535)],
-        to_update_credential=[],
-        to_update_policy=[],
-        to_deactivate=[],
-        unmapped=[],
+        to_add=(_r(contact_id=1, card_id=0), _r(contact_id=2, card_id=65535)),
+        to_update_credential=(),
+        to_update_policy=(),
+        to_deactivate=(),
+        unmapped=(),
     )
     result = check(diff, baseline=_HIGH_BASELINE, thresholds=SafetyThresholds())
     assert result.halted is False
@@ -161,11 +161,11 @@ def test_card_id_at_boundary_0_and_65535_is_valid() -> None:
 def test_mass_deactivation_just_over_threshold_halts() -> None:
     # 16 / 100 = 16% > 15%
     diff = Diff(
-        to_add=[],
-        to_update_credential=[],
-        to_update_policy=[],
-        to_deactivate=[_u(contact_id=i) for i in range(16)],
-        unmapped=[],
+        to_add=(),
+        to_update_credential=(),
+        to_update_policy=(),
+        to_deactivate=tuple(_u(contact_id=i) for i in range(16)),
+        unmapped=(),
     )
     result = check(diff, baseline=100, thresholds=SafetyThresholds())
     assert result.halted is True
@@ -175,11 +175,11 @@ def test_mass_deactivation_just_over_threshold_halts() -> None:
 def test_mass_deactivation_just_under_threshold_does_not_halt() -> None:
     # 15 / 100 = 15% not > 15%
     diff = Diff(
-        to_add=[],
-        to_update_credential=[],
-        to_update_policy=[],
-        to_deactivate=[_u(contact_id=i) for i in range(15)],
-        unmapped=[],
+        to_add=(),
+        to_update_credential=(),
+        to_update_policy=(),
+        to_deactivate=tuple(_u(contact_id=i) for i in range(15)),
+        unmapped=(),
     )
     result = check(diff, baseline=100, thresholds=SafetyThresholds())
     assert result.halted is False
@@ -191,11 +191,11 @@ def test_mass_deactivation_just_under_threshold_does_not_halt() -> None:
 def test_mass_addition_over_threshold_halts() -> None:
     # 26 / 100 = 26% > 25%, with unique card ids to avoid tripping dup guard
     diff = Diff(
-        to_add=[_r(contact_id=i, card_id=1000 + i) for i in range(26)],
-        to_update_credential=[],
-        to_update_policy=[],
-        to_deactivate=[],
-        unmapped=[],
+        to_add=tuple(_r(contact_id=i, card_id=1000 + i) for i in range(26)),
+        to_update_credential=(),
+        to_update_policy=(),
+        to_deactivate=(),
+        unmapped=(),
     )
     result = check(diff, baseline=100, thresholds=SafetyThresholds())
     assert result.halted is True
@@ -208,14 +208,13 @@ def test_mass_addition_over_threshold_halts() -> None:
 def test_mass_policy_change_over_threshold_halts() -> None:
     # 21 / 100 = 21% > 20%
     diff = Diff(
-        to_add=[],
-        to_update_credential=[],
-        to_update_policy=[
-            (_r(contact_id=i, card_id=2000 + i), _u(contact_id=i))
-            for i in range(21)
-        ],
-        to_deactivate=[],
-        unmapped=[],
+        to_add=(),
+        to_update_credential=(),
+        to_update_policy=tuple(
+            (_r(contact_id=i, card_id=2000 + i), _u(contact_id=i)) for i in range(21)
+        ),
+        to_deactivate=(),
+        unmapped=(),
     )
     result = check(diff, baseline=100, thresholds=SafetyThresholds())
     assert result.halted is True
@@ -229,11 +228,11 @@ def test_mass_guards_skipped_when_baseline_below_floor() -> None:
     # 5 to_deactivate, baseline=5 → would be 100%, way over 15%
     # But baseline=5 < floor=10, so guard skipped.
     diff = Diff(
-        to_add=[],
-        to_update_credential=[],
-        to_update_policy=[],
-        to_deactivate=[_u(contact_id=i) for i in range(5)],
-        unmapped=[],
+        to_add=(),
+        to_update_credential=(),
+        to_update_policy=(),
+        to_deactivate=tuple(_u(contact_id=i) for i in range(5)),
+        unmapped=(),
     )
     result = check(diff, baseline=5, thresholds=SafetyThresholds())
     assert result.halted is False
@@ -242,11 +241,11 @@ def test_mass_guards_skipped_when_baseline_below_floor() -> None:
 def test_integrity_guards_run_even_below_floor() -> None:
     # Below floor, but unmapped still trips.
     diff = Diff(
-        to_add=[],
-        to_update_credential=[],
-        to_update_policy=[],
-        to_deactivate=[],
-        unmapped=[_r(resolution="unmapped", target_policy=None)],
+        to_add=(),
+        to_update_credential=(),
+        to_update_policy=(),
+        to_deactivate=(),
+        unmapped=(_r(resolution="unmapped", target_policy=None),),
     )
     result = check(diff, baseline=5, thresholds=SafetyThresholds())
     assert result.halted is True

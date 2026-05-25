@@ -11,4 +11,4 @@ repos:
       - id: pyrefly-check
         name: Pyrefly (type checking)
         pass_filenames: false  # Recommended to do full repo checks. However, you can change this to `true` to only check changed files
-        additional_dependencies: [httpx>=0.28.1]
+        additional_dependencies: [httpx>=0.28.1, pytest>=9.0.3,pytest-httpx>=0.30]

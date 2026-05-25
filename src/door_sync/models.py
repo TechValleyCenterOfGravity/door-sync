@@ -7,7 +7,7 @@ class CiviMember:
     contact_id: int
     display_name: str
     card_id: int | None
-    membership_types: list[str]
+    membership_types: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -30,11 +30,11 @@ class UnifiUser:
 
 @dataclass(frozen=True)
 class Diff:
-    to_add: list[ResolvedMember]
-    to_update_credential: list[tuple[ResolvedMember, UnifiUser]]
-    to_update_policy: list[tuple[ResolvedMember, UnifiUser]]
-    to_deactivate: list[UnifiUser]
-    unmapped: list[ResolvedMember]
+    to_add: tuple[ResolvedMember, ...]
+    to_update_credential: tuple[tuple[ResolvedMember, UnifiUser], ...]
+    to_update_policy: tuple[tuple[ResolvedMember, UnifiUser], ...]
+    to_deactivate: tuple[UnifiUser, ...]
+    unmapped: tuple[ResolvedMember, ...]
 
 
 @dataclass(frozen=True)

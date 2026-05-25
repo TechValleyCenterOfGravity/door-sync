@@ -96,7 +96,7 @@ def test_fetch_active_happy_path(httpx_mock: HTTPXMock) -> None:
     assert member.contact_id == 42
     assert member.display_name == "Jane Doe"
     assert member.card_id == 12345
-    assert member.membership_types == ["Gold"]
+    assert member.membership_types == ("Gold",)
 
 
 def test_fetch_active_empty_result(httpx_mock: HTTPXMock) -> None:
@@ -126,7 +126,7 @@ def test_contact_with_multiple_active_memberships(httpx_mock: HTTPXMock) -> None
         result = client.fetch_active()
 
     assert len(result) == 1
-    assert sorted(result[0].membership_types) == ["Comp", "Gold"]
+    assert sorted(result[0].membership_types) == ["Comp", "Gold"]  # sorted returns list
 
 
 def test_contact_with_no_active_membership_kept_with_empty_types(
@@ -145,7 +145,7 @@ def test_contact_with_no_active_membership_kept_with_empty_types(
 
     assert len(result) == 1
     assert result[0].contact_id == 42
-    assert result[0].membership_types == []
+    assert result[0].membership_types == ()
 
 
 def test_expired_memberships_filtered(httpx_mock: HTTPXMock) -> None:
@@ -167,7 +167,7 @@ def test_expired_memberships_filtered(httpx_mock: HTTPXMock) -> None:
     with CivicrmClient(_config()) as client:
         result = client.fetch_active()
 
-    assert result[0].membership_types == ["Silver"]
+    assert result[0].membership_types == ("Silver",)
 
 
 def test_request_uses_bearer_auth_and_form_body(httpx_mock: HTTPXMock) -> None:
@@ -227,15 +227,10 @@ def test_fetch_active_paginates_contacts(httpx_mock: HTTPXMock) -> None:
     assert {m.contact_id for m in result} == set(range(1, 252))
 
     # Confirm two Contact.get requests were made with offset=0 and offset=250
-    contact_requests = [
-        r for r in httpx_mock.get_requests()
-        if "/Contact/get" in str(r.url)
-    ]
+    contact_requests = [r for r in httpx_mock.get_requests() if "/Contact/get" in str(r.url)]
     assert len(contact_requests) == 2
     offsets = sorted(
-        json.loads(
-            urllib.parse.parse_qs(r.content.decode())["params"][0]
-        ).get("offset", 0)
+        json.loads(urllib.parse.parse_qs(r.content.decode())["params"][0]).get("offset", 0)
         for r in contact_requests
     )
     assert offsets == [0, 250]
@@ -297,24 +292,17 @@ def test_fetch_active_batches_membership_contact_ids(
         result = client.fetch_active()
 
     assert len(result) == 501
-    assert all(m.membership_types == [] for m in result)
+    assert all(m.membership_types == () for m in result)
 
     # Verify two Membership.get calls were made with disjoint contact_id batches
-    membership_requests = [
-        r for r in httpx_mock.get_requests()
-        if "/Membership/get" in str(r.url)
-    ]
+    membership_requests = [r for r in httpx_mock.get_requests() if "/Membership/get" in str(r.url)]
     assert len(membership_requests) == 2
 
     all_batch_ids: list[int] = []
     for r in membership_requests:
-        params = json.loads(
-            urllib.parse.parse_qs(r.content.decode())["params"][0]
-        )
+        params = json.loads(urllib.parse.parse_qs(r.content.decode())["params"][0])
         # where = [["contact_id", "IN", [...]], ["status_id:name", "IN", [...]]]
-        contact_id_clause = next(
-            w for w in params["where"] if w[0] == "contact_id"
-        )
+        contact_id_clause = next(w for w in params["where"] if w[0] == "contact_id")
         all_batch_ids.extend(contact_id_clause[2])
 
     # Each contact_id appears exactly once across all batches, covering all 501
@@ -380,9 +368,7 @@ def test_http_500_retries_then_raises(
     assert len(sleep_calls) == 2  # Sleep between attempts, not after the last
 
 
-def test_http_500_then_200_succeeds(
-    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_http_500_then_200_succeeds(httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch) -> None:
     """500 then 200 → success after one retry."""
     sleep_calls: list[float] = []
     monkeypatch.setattr("time.sleep", lambda s: sleep_calls.append(s))
@@ -457,9 +443,7 @@ def test_network_error_retries_then_raises(
     assert len(sleep_calls) == 2  # Sleep between attempts
 
 
-def test_network_error_then_success(
-    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_network_error_then_success(httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch) -> None:
     """One network error then success → fetch_active succeeds."""
     sleep_calls: list[float] = []
     monkeypatch.setattr("time.sleep", lambda s: sleep_calls.append(s))
@@ -540,6 +524,7 @@ def test_unparseable_card_id_raises_with_contact_context(
             client.fetch_active()
 
     msg = str(exc.value)
-    assert "42" in msg                       # contact_id surfaced
-    assert "not-a-number" in msg             # bad value surfaced
-    assert "Door_Access.card_id" in msg      # field name surfaced
+    assert "42" in msg  # contact_id surfaced
+    assert "non-numeric" in msg  # redacted type surfaced
+    assert "not-a-number" not in msg  # raw value must NOT leak
+    assert "Door_Access.card_id" in msg  # field name surfaced

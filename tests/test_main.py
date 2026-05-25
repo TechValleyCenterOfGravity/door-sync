@@ -65,7 +65,7 @@ def test_run_once_success_exits_zero(tmp_path: Path, monkeypatch: pytest.MonkeyP
     _patch_config_load(monkeypatch, cfg)
 
     def _ok(c: Config, *, dry_run: bool) -> ReconcileResult:
-        return ReconcileResult(halted=False, reason=None, diff=Diff([], [], [], [], []))
+        return ReconcileResult(halted=False, reason=None, diff=Diff((), (), (), (), ()))
 
     monkeypatch.setattr(orchestrator, "reconcile", _ok)
 
@@ -78,7 +78,7 @@ def test_run_once_halt_exits_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     _patch_config_load(monkeypatch, cfg)
 
     def _halt(c: Config, *, dry_run: bool) -> ReconcileResult:
-        return ReconcileResult(halted=True, reason="mass_deactivate", diff=Diff([], [], [], [], []))
+        return ReconcileResult(halted=True, reason="mass_deactivate", diff=Diff((), (), (), (), ()))
 
     monkeypatch.setattr(orchestrator, "reconcile", _halt)
 

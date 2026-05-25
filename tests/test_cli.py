@@ -9,21 +9,21 @@ from door_sync.models import Diff, ResolvedMember, UnifiUser
 
 def test_print_diff_renders_five_sections() -> None:
     diff = Diff(
-        to_add=[ResolvedMember(1, "Alice", 0x1234, "p1", "tier")],
-        to_update_credential=[
+        to_add=(ResolvedMember(1, "Alice", 0x1234, "p1", "tier"),),
+        to_update_credential=(
             (
                 ResolvedMember(2, "Bob", 0x5678, "p1", "tier"),
                 UnifiUser(2, "Bob", 0x1111, True, "p1"),
             ),
-        ],
-        to_update_policy=[
+        ),
+        to_update_policy=(
             (
                 ResolvedMember(3, "Carol", 0x9999, "p2", "tier"),
                 UnifiUser(3, "Carol", 0x9999, True, "p1"),
             ),
-        ],
-        to_deactivate=[UnifiUser(4, "Dave", 0xABCD, True, "p1")],
-        unmapped=[ResolvedMember(5, "Eve", 0xFFFF, None, "unmapped")],
+        ),
+        to_deactivate=(UnifiUser(4, "Dave", 0xABCD, True, "p1"),),
+        unmapped=(ResolvedMember(5, "Eve", 0xFFFF, None, "unmapped"),),
     )
     out = io.StringIO()
 
@@ -46,7 +46,7 @@ def test_print_diff_renders_five_sections() -> None:
 
 
 def test_print_diff_empty_sections_still_print_header() -> None:
-    diff = Diff([], [], [], [], [])
+    diff = Diff((), (), (), (), ())
     out = io.StringIO()
 
     cli.print_diff(diff, file=out)

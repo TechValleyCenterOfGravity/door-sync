@@ -16,9 +16,7 @@ from door_sync.models import (
 
 
 def test_civi_member_is_frozen() -> None:
-    m = CiviMember(
-        contact_id=1, display_name="A", card_id=None, membership_types=[]
-    )
+    m = CiviMember(contact_id=1, display_name="A", card_id=None, membership_types=())
     with pytest.raises(FrozenInstanceError):
         m.contact_id = 2  # type: ignore[misc]
 
@@ -36,20 +34,18 @@ def test_resolved_member_is_frozen() -> None:
 
 
 def test_unifi_user_is_frozen() -> None:
-    u = UnifiUser(
-        contact_id=1, display_name="A", card_id=None, active=True, policy=None
-    )
+    u = UnifiUser(contact_id=1, display_name="A", card_id=None, active=True, policy=None)
     with pytest.raises(FrozenInstanceError):
         u.active = False  # type: ignore[misc]
 
 
 def test_diff_is_frozen() -> None:
     d = Diff(
-        to_add=[],
-        to_update_credential=[],
-        to_update_policy=[],
-        to_deactivate=[],
-        unmapped=[],
+        to_add=(),
+        to_update_credential=(),
+        to_update_policy=(),
+        to_deactivate=(),
+        unmapped=(),
     )
     with pytest.raises(FrozenInstanceError):
         d.to_add = []  # type: ignore[misc]
@@ -94,10 +90,6 @@ def test_safety_thresholds_is_frozen() -> None:
 
 
 def test_dataclass_equality_round_trips() -> None:
-    a = CiviMember(
-        contact_id=1, display_name="A", card_id=42, membership_types=["X"]
-    )
-    b = CiviMember(
-        contact_id=1, display_name="A", card_id=42, membership_types=["X"]
-    )
+    a = CiviMember(contact_id=1, display_name="A", card_id=42, membership_types=("X",))
+    b = CiviMember(contact_id=1, display_name="A", card_id=42, membership_types=("X",))
     assert a == b

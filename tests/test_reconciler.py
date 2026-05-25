@@ -43,36 +43,36 @@ def test_tier_not_in_unifi_adds() -> None:
     d = compute_diff([_resolved()], [])
     assert len(d.to_add) == 1
     assert d.to_add[0].contact_id == 1
-    assert d.to_update_credential == []
-    assert d.to_update_policy == []
-    assert d.to_deactivate == []
-    assert d.unmapped == []
+    assert d.to_update_credential == ()
+    assert d.to_update_policy == ()
+    assert d.to_deactivate == ()
+    assert d.unmapped == ()
 
 
 def test_tier_card_id_differs_updates_credential() -> None:
     r = _resolved(card_id=200)
     u = _unifi(card_id=100)
     d = compute_diff([r], [u])
-    assert d.to_update_credential == [(r, u)]
-    assert d.to_update_policy == []
-    assert d.to_add == []
-    assert d.to_deactivate == []
+    assert d.to_update_credential == ((r, u),)
+    assert d.to_update_policy == ()
+    assert d.to_add == ()
+    assert d.to_deactivate == ()
 
 
 def test_tier_display_name_differs_updates_credential() -> None:
     r = _resolved(display_name="Alice Renamed")
     u = _unifi(display_name="Alice")
     d = compute_diff([r], [u])
-    assert d.to_update_credential == [(r, u)]
-    assert d.to_update_policy == []
+    assert d.to_update_credential == ((r, u),)
+    assert d.to_update_policy == ()
 
 
 def test_tier_policy_differs_updates_policy() -> None:
     r = _resolved(target_policy="P_PLATINUM")
     u = _unifi(policy="P_GOLD")
     d = compute_diff([r], [u])
-    assert d.to_update_policy == [(r, u)]
-    assert d.to_update_credential == []
+    assert d.to_update_policy == ((r, u),)
+    assert d.to_update_credential == ()
 
 
 def test_tier_no_differences_is_noop() -> None:
@@ -80,11 +80,11 @@ def test_tier_no_differences_is_noop() -> None:
     u = _unifi()
     d = compute_diff([r], [u])
     assert d == Diff(
-        to_add=[],
-        to_update_credential=[],
-        to_update_policy=[],
-        to_deactivate=[],
-        unmapped=[],
+        to_add=(),
+        to_update_credential=(),
+        to_update_policy=(),
+        to_deactivate=(),
+        unmapped=(),
     )
 
 
@@ -92,33 +92,33 @@ def test_tier_present_inactive_re_adds() -> None:
     r = _resolved()
     u = _unifi(active=False)
     d = compute_diff([r], [u])
-    assert d.to_add == [r]
-    assert d.to_deactivate == []
-    assert d.to_update_credential == []
-    assert d.to_update_policy == []
+    assert d.to_add == (r,)
+    assert d.to_deactivate == ()
+    assert d.to_update_credential == ()
+    assert d.to_update_policy == ()
 
 
 def test_none_resolution_present_active_deactivates() -> None:
     r = _resolved(resolution="none", target_policy=None)
     u = _unifi()
     d = compute_diff([r], [u])
-    assert d.to_deactivate == [u]
-    assert d.to_add == []
+    assert d.to_deactivate == (u,)
+    assert d.to_add == ()
 
 
 def test_none_resolution_present_inactive_is_noop() -> None:
     r = _resolved(resolution="none", target_policy=None)
     u = _unifi(active=False)
     d = compute_diff([r], [u])
-    assert d.to_deactivate == []
-    assert d.to_add == []
+    assert d.to_deactivate == ()
+    assert d.to_add == ()
 
 
 def test_none_resolution_not_in_unifi_is_noop() -> None:
     r = _resolved(resolution="none", target_policy=None)
     d = compute_diff([r], [])
-    assert d.to_deactivate == []
-    assert d.to_add == []
+    assert d.to_deactivate == ()
+    assert d.to_add == ()
 
 
 def test_day_pass_resolution_is_always_noop() -> None:
@@ -131,34 +131,34 @@ def test_day_pass_resolution_is_always_noop() -> None:
     d3 = compute_diff([r], [])
     for d in (d1, d2, d3):
         assert d == Diff(
-            to_add=[],
-            to_update_credential=[],
-            to_update_policy=[],
-            to_deactivate=[],
-            unmapped=[],
+            to_add=(),
+            to_update_credential=(),
+            to_update_policy=(),
+            to_deactivate=(),
+            unmapped=(),
         )
 
 
 def test_unmapped_resolution_appended_to_unmapped() -> None:
     r = _resolved(resolution="unmapped", target_policy=None)
     d = compute_diff([r], [])
-    assert d.unmapped == [r]
-    assert d.to_add == []
-    assert d.to_update_credential == []
-    assert d.to_update_policy == []
-    assert d.to_deactivate == []
+    assert d.unmapped == (r,)
+    assert d.to_add == ()
+    assert d.to_update_credential == ()
+    assert d.to_update_policy == ()
+    assert d.to_deactivate == ()
 
 
 def test_contact_only_in_unifi_active_deactivates() -> None:
     u = _unifi()
     d = compute_diff([], [u])
-    assert d.to_deactivate == [u]
+    assert d.to_deactivate == (u,)
 
 
 def test_contact_only_in_unifi_inactive_is_noop() -> None:
     u = _unifi(active=False)
     d = compute_diff([], [u])
-    assert d.to_deactivate == []
+    assert d.to_deactivate == ()
 
 
 # --- Combined-update test (architecture §8 last paragraph) ---
@@ -168,8 +168,8 @@ def test_tier_with_both_credential_and_policy_changes() -> None:
     r = _resolved(card_id=200, target_policy="P_PLATINUM")
     u = _unifi(card_id=100, policy="P_GOLD")
     d = compute_diff([r], [u])
-    assert d.to_update_credential == [(r, u)]
-    assert d.to_update_policy == [(r, u)]
+    assert d.to_update_credential == ((r, u),)
+    assert d.to_update_policy == ((r, u),)
 
 
 # --- Idempotency canary (architecture §8) ---
@@ -263,9 +263,9 @@ def test_idempotency_canary() -> None:
     second = compute_diff(resolved, new_unifi)
 
     assert second == Diff(
-        to_add=[],
-        to_update_credential=[],
-        to_update_policy=[],
-        to_deactivate=[],
-        unmapped=[],
+        to_add=(),
+        to_update_credential=(),
+        to_update_policy=(),
+        to_deactivate=(),
+        unmapped=(),
     )

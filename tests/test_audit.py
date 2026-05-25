@@ -8,8 +8,9 @@ from door_sync import audit
 from door_sync.models import Diff, ResolvedMember, UnifiUser
 
 
-def _resolved(contact_id: int, card_id: int | None = None,
-              policy: str | None = "p1") -> ResolvedMember:
+def _resolved(
+    contact_id: int, card_id: int | None = None, policy: str | None = "p1"
+) -> ResolvedMember:
     return ResolvedMember(
         contact_id=contact_id,
         display_name=f"User {contact_id}",
@@ -19,8 +20,9 @@ def _resolved(contact_id: int, card_id: int | None = None,
     )
 
 
-def _unifi(contact_id: int, card_id: int | None = None,
-           active: bool = True, policy: str | None = "p1") -> UnifiUser:
+def _unifi(
+    contact_id: int, card_id: int | None = None, active: bool = True, policy: str | None = "p1"
+) -> UnifiUser:
     return UnifiUser(
         contact_id=contact_id,
         display_name=f"User {contact_id}",
@@ -37,11 +39,11 @@ def _read_lines(path: Path) -> list[dict[str, Any]]:
 def test_log_applied_writes_single_jsonl_record(tmp_path: Path) -> None:
     path = tmp_path / "audit.jsonl"
     diff = Diff(
-        to_add=[_resolved(1, card_id=0x1234)],
-        to_update_credential=[],
-        to_update_policy=[],
-        to_deactivate=[],
-        unmapped=[],
+        to_add=(_resolved(1, card_id=0x1234),),
+        to_update_credential=(),
+        to_update_policy=(),
+        to_deactivate=(),
+        unmapped=(),
     )
 
     audit.log_applied(diff, dry_run=False, path=path, facility_code=42)
@@ -62,7 +64,7 @@ def test_log_applied_writes_single_jsonl_record(tmp_path: Path) -> None:
 
 def test_log_applied_dry_run_marks_record(tmp_path: Path) -> None:
     path = tmp_path / "audit.jsonl"
-    diff = Diff([], [], [], [], [])
+    diff = Diff((), (), (), (), ())
 
     audit.log_applied(diff, dry_run=True, path=path, facility_code=42)
 
@@ -73,11 +75,14 @@ def test_log_applied_dry_run_marks_record(tmp_path: Path) -> None:
 
 def test_log_halt_includes_reason(tmp_path: Path) -> None:
     path = tmp_path / "audit.jsonl"
-    diff = Diff([], [], [], [_unifi(1, card_id=0x5678)], [])
+    diff = Diff((), (), (), (_unifi(1, card_id=0x5678),), ())
 
     audit.log_halt(
         "mass_deactivate exceeded 15% threshold",
-        diff, dry_run=False, path=path, facility_code=42,
+        diff,
+        dry_run=False,
+        path=path,
+        facility_code=42,
     )
 
     rec = _read_lines(path)[0]
@@ -108,13 +113,11 @@ def test_log_crashed_records_exception_class_and_message(tmp_path: Path) -> None
 def test_card_last4_placement(tmp_path: Path) -> None:
     path = tmp_path / "audit.jsonl"
     diff = Diff(
-        to_add=[_resolved(1, card_id=0x1234)],
-        to_update_credential=[(_resolved(2, card_id=0x5678),
-                               _unifi(2, card_id=0x1111))],
-        to_update_policy=[(_resolved(3, card_id=0x9999),
-                           _unifi(3, card_id=0x9999))],
-        to_deactivate=[_unifi(4, card_id=0xABCD)],
-        unmapped=[_resolved(5, card_id=0xFFFF)],
+        to_add=(_resolved(1, card_id=0x1234),),
+        to_update_credential=((_resolved(2, card_id=0x5678), _unifi(2, card_id=0x1111)),),
+        to_update_policy=((_resolved(3, card_id=0x9999), _unifi(3, card_id=0x9999)),),
+        to_deactivate=(_unifi(4, card_id=0xABCD),),
+        unmapped=(_resolved(5, card_id=0xFFFF),),
     )
 
     audit.log_applied(diff, dry_run=False, path=path, facility_code=42)
@@ -131,7 +134,7 @@ def test_card_last4_placement(tmp_path: Path) -> None:
 
 def test_two_writes_append_two_lines(tmp_path: Path) -> None:
     path = tmp_path / "audit.jsonl"
-    diff = Diff([], [], [], [], [])
+    diff = Diff((), (), (), (), ())
 
     audit.log_applied(diff, dry_run=False, path=path, facility_code=42)
     audit.log_applied(diff, dry_run=True, path=path, facility_code=42)
@@ -144,7 +147,7 @@ def test_two_writes_append_two_lines(tmp_path: Path) -> None:
 
 def test_creates_missing_parent_dir(tmp_path: Path) -> None:
     path = tmp_path / "deep" / "nested" / "audit.jsonl"
-    diff = Diff([], [], [], [], [])
+    diff = Diff((), (), (), (), ())
 
     audit.log_applied(diff, dry_run=False, path=path, facility_code=42)
 
@@ -155,11 +158,11 @@ def test_redaction_canary_no_full_nfc_id_appears(tmp_path: Path) -> None:
     """Architecture §11: never log full card IDs at any level."""
     path = tmp_path / "audit.jsonl"
     diff = Diff(
-        to_add=[_resolved(1, card_id=0x1234)],
-        to_update_credential=[],
-        to_update_policy=[],
-        to_deactivate=[_unifi(2, card_id=0xABCD)],
-        unmapped=[],
+        to_add=(_resolved(1, card_id=0x1234),),
+        to_update_credential=(),
+        to_update_policy=(),
+        to_deactivate=(_unifi(2, card_id=0xABCD),),
+        unmapped=(),
     )
 
     audit.log_applied(diff, dry_run=False, path=path, facility_code=42)

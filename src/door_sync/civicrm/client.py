@@ -28,7 +28,9 @@ from door_sync.models import CiviMember
 
 _API_PATH = "/wp-json/civicrm/v3/api4"
 _PAGE_SIZE = 250
-_CONTACT_BATCH_SIZE = 500  # Caps contact_ids per Membership.get IN clause to keep request body bounded
+_CONTACT_BATCH_SIZE = (
+    500  # Caps contact_ids per Membership.get IN clause to keep request body bounded
+)
 _ACTIVE_STATUSES = ["Current", "Grace"]
 _MAX_PAGES = 1_000  # 250,000 records — far above any plausible deployment
 _MAX_ATTEMPTS = 3
@@ -74,17 +76,22 @@ class CivicrmClient:
             try:
                 card_id = _coerce_card_id(raw_card_id)
             except (ValueError, TypeError) as e:
+                redacted = (
+                    "non-numeric"
+                    if isinstance(raw_card_id, str)
+                    else f"type {type(raw_card_id).__name__}"
+                )
                 raise CivicrmClientError(
                     f"contact {cid}: card_id field "
                     f"{self._config.card_id_field!r} has unparseable value "
-                    f"{raw_card_id!r}: {e}"
+                    f"({redacted})"
                 ) from e
             result.append(
                 CiviMember(
                     contact_id=cid,
                     display_name=str(c["display_name"]),
                     card_id=card_id,
-                    membership_types=types_by_contact.get(cid, []),
+                    membership_types=tuple(types_by_contact.get(cid, ())),
                 )
             )
         return result
@@ -123,9 +130,7 @@ class CivicrmClient:
             results.extend(self._fetch_memberships_for_batch(batch))
         return results
 
-    def _fetch_memberships_for_batch(
-        self, batch_ids: list[int]
-    ) -> list[dict[str, Any]]:
+    def _fetch_memberships_for_batch(self, batch_ids: list[int]) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
         offset = 0
         for _ in range(_MAX_PAGES):
@@ -154,18 +159,14 @@ class CivicrmClient:
             f"Membership.get pagination exceeded {_MAX_PAGES} pages without terminating"
         )
 
-    def _post(
-        self, entity: str, action: str, params: dict[str, Any]
-    ) -> list[dict[str, Any]]:
+    def _post(self, entity: str, action: str, params: dict[str, Any]) -> list[dict[str, Any]]:
         url = f"{_API_PATH}/{entity}/{action}"
         data = {"params": json.dumps(params)}
         response = self._with_retries(lambda: self._http.post(url, data=data))
         try:
             payload = response.json()
         except (json.JSONDecodeError, ValueError) as e:
-            raise CivicrmClientError(
-                f"malformed JSON response from {url}: {e}"
-            ) from e
+            raise CivicrmClientError(f"malformed JSON response from {url}: {e}") from e
         if not isinstance(payload, dict):
             return []
         values = payload.get("values", [])
@@ -173,9 +174,7 @@ class CivicrmClient:
             return []
         return values
 
-    def _with_retries(
-        self, action: Callable[[], httpx.Response]
-    ) -> httpx.Response:
+    def _with_retries(self, action: Callable[[], httpx.Response]) -> httpx.Response:
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             try:
                 response = action()
@@ -208,9 +207,7 @@ class CivicrmClient:
 
             if response.status_code >= 400:
                 # 4xx other than 429 → permanent, no retry
-                raise CivicrmClientError(
-                    f"HTTP {response.status_code}: {response.text[:200]}"
-                )
+                raise CivicrmClientError(f"HTTP {response.status_code}: {response.text[:200]}")
 
             return response
 

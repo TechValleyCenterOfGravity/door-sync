@@ -396,7 +396,7 @@ These decisions are intentionally deferred. When implementing them, update this 
 | UniFi client API surface (method signatures) | `unifi/client.py` + new §15 here | Constrained by UniFi Access API capabilities |
 | Alerting transport | `alert.py` + new §17 here | Flag-file stub is shipped (presence = active alert, contents = reason); SMTP/webhook transport TBD |
 | Retry/backoff specifics | inside both clients | Per design guide §8 |
-| Packaging and deployment specifics | `pyproject.toml` + README | Standard pip-into-venv expected |
+| Packaging and deployment specifics | `pyproject.toml` + README | Standard `uv` workflow (`uv sync`, `uv run`, committed `uv.lock`) |
 
 ---
 

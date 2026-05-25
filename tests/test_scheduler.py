@@ -55,7 +55,7 @@ def _config(tmp_path: Path, *, cadence_seconds: int = 600) -> Config:
 
 
 def _ok_result() -> ReconcileResult:
-    return ReconcileResult(halted=False, reason=None, diff=Diff([], [], [], [], []))
+    return ReconcileResult(halted=False, reason=None, diff=Diff((), (), (), (), ()))
 
 
 def test_install_signal_handlers_sets_event_on_sigterm() -> None:

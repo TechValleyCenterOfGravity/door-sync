@@ -192,7 +192,7 @@ def test_happy_path_no_drift(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     # 12 baseline active users (above SafetyThresholds.baseline_floor=10)
     members = [
         CiviMember(
-            contact_id=i, display_name=f"User {i}", card_id=0x1000 + i, membership_types=["Gold"]
+            contact_id=i, display_name=f"User {i}", card_id=0x1000 + i, membership_types=("Gold",)
         )
         for i in range(1, 13)
     ]
@@ -208,8 +208,8 @@ def test_happy_path_no_drift(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
 
     assert result.halted is False
     assert result.diff is not None
-    assert result.diff.to_add == []
-    assert result.diff.to_deactivate == []
+    assert result.diff.to_add == ()
+    assert result.diff.to_deactivate == ()
 
     # Audit: one applied line
     audit_lines = (tmp_path / "audit.jsonl").read_text().splitlines()
@@ -227,12 +227,12 @@ def test_apply_with_drift_calls_unifi_apply(
     cfg = _config(tmp_path)
     members = [
         CiviMember(
-            contact_id=i, display_name=f"User {i}", card_id=0x1000 + i, membership_types=["Gold"]
+            contact_id=i, display_name=f"User {i}", card_id=0x1000 + i, membership_types=("Gold",)
         )
         for i in range(1, 12)
     ]
     members.append(  # new member not yet in UniFi
-        CiviMember(contact_id=99, display_name="New", card_id=0x9999, membership_types=["Gold"])
+        CiviMember(contact_id=99, display_name="New", card_id=0x9999, membership_types=("Gold",))
     )
     users = [
         UnifiUser(
@@ -258,7 +258,7 @@ def test_safety_halt_writes_alert_flag_and_audit_halt(
     # 20 users in UniFi; CiviCRM returns only 10 — would deactivate 50% > 15% threshold
     members = [
         CiviMember(
-            contact_id=i, display_name=f"User {i}", card_id=0x1000 + i, membership_types=["Gold"]
+            contact_id=i, display_name=f"User {i}", card_id=0x1000 + i, membership_types=("Gold",)
         )
         for i in range(1, 11)
     ]
@@ -295,12 +295,12 @@ def test_idempotency_canary_second_cycle_is_noop(
     cfg = _config(tmp_path)
     members = [
         CiviMember(
-            contact_id=i, display_name=f"User {i}", card_id=0x1000 + i, membership_types=["Gold"]
+            contact_id=i, display_name=f"User {i}", card_id=0x1000 + i, membership_types=("Gold",)
         )
         for i in range(1, 13)
     ]
     members.append(
-        CiviMember(contact_id=99, display_name="New", card_id=0x9999, membership_types=["Gold"])
+        CiviMember(contact_id=99, display_name="New", card_id=0x9999, membership_types=("Gold",))
     )
     users = [
         UnifiUser(
@@ -335,10 +335,10 @@ def test_idempotency_canary_second_cycle_is_noop(
     second = orchestrator.reconcile(cfg, dry_run=False)
     assert second.halted is False
     assert second.diff is not None
-    assert second.diff.to_add == []
-    assert second.diff.to_update_credential == []
-    assert second.diff.to_update_policy == []
-    assert second.diff.to_deactivate == []
+    assert second.diff.to_add == ()
+    assert second.diff.to_update_credential == ()
+    assert second.diff.to_update_policy == ()
+    assert second.diff.to_deactivate == ()
 
 
 def test_dry_run_apply_does_not_touch_state_or_alert(
@@ -347,12 +347,12 @@ def test_dry_run_apply_does_not_touch_state_or_alert(
     cfg = _config(tmp_path)
     members = [
         CiviMember(
-            contact_id=i, display_name=f"User {i}", card_id=0x1000 + i, membership_types=["Gold"]
+            contact_id=i, display_name=f"User {i}", card_id=0x1000 + i, membership_types=("Gold",)
         )
         for i in range(1, 13)
     ]
     members.append(
-        CiviMember(contact_id=99, display_name="New", card_id=0x9999, membership_types=["Gold"])
+        CiviMember(contact_id=99, display_name="New", card_id=0x9999, membership_types=("Gold",))
     )
     users = [
         UnifiUser(
@@ -383,7 +383,7 @@ def test_dry_run_halt_writes_alert_flag_but_not_state(
     cfg = _config(tmp_path)
     members = [
         CiviMember(
-            contact_id=i, display_name=f"User {i}", card_id=0x1000 + i, membership_types=["Gold"]
+            contact_id=i, display_name=f"User {i}", card_id=0x1000 + i, membership_types=("Gold",)
         )
         for i in range(1, 11)
     ]
