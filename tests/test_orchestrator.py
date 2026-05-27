@@ -14,6 +14,7 @@ import pytest
 
 from door_sync import orchestrator
 from door_sync.config import (
+    AlertConfig,
     CivicrmConfig,
     Config,
     OpsPaths,
@@ -159,6 +160,7 @@ def _config(tmp_path: Path) -> Config:
             state_json=tmp_path / "state.json",
             alert_flag=tmp_path / "alert.flag",
         ),
+        alert=AlertConfig(transport="flag-file", smtp=None, mailgun=None),
     )
 
 

@@ -112,7 +112,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     try:
         result = orchestrator.reconcile(config, dry_run=args.dry_run)
     except Exception as exc:
-        orchestrator.handle_crash(exc, paths=config.ops_paths)
+        orchestrator.handle_crash(exc, paths=config.ops_paths, alert_config=config.alert)
         return 2
 
     return 1 if result.halted else 0

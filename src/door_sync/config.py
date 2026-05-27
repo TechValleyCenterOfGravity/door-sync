@@ -17,9 +17,9 @@ from typing import Any, Literal, cast
 
 from door_sync.models import SafetyThresholds, TierMapping, TierRule
 
-_FINGERPRINT_RE = re.compile(
-    r"^(?:(?:[0-9A-Fa-f]{2}:){31}[0-9A-Fa-f]{2}|[0-9A-Fa-f]{64})$"
-)
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+_FINGERPRINT_RE = re.compile(r"^(?:(?:[0-9A-Fa-f]{2}:){31}[0-9A-Fa-f]{2}|[0-9A-Fa-f]{64})$")
 
 _VALID_RESOLUTIONS = frozenset({"tier", "none", "day-pass"})
 
@@ -42,6 +42,37 @@ class UnifiConfig:
 
 
 @dataclass(frozen=True)
+class SmtpConfig:
+    host: str
+    port: int
+    starttls: bool
+    username: str
+    password: str
+    from_addr: str
+    to_addrs: tuple[str, ...]
+    subject_prefix: str
+
+
+@dataclass(frozen=True)
+class MailgunConfig:
+    domain: str
+    api_key: str
+    from_addr: str
+    to_addrs: tuple[str, ...]
+    subject_prefix: str
+
+
+@dataclass(frozen=True)
+class AlertConfig:
+    transport: Literal["flag-file", "smtp", "mailgun"]
+    smtp: SmtpConfig | None
+    mailgun: MailgunConfig | None
+
+
+_DEFAULT_ALERT_CONFIG = AlertConfig(transport="flag-file", smtp=None, mailgun=None)
+
+
+@dataclass(frozen=True)
 class OpsPaths:
     audit_jsonl: Path
     state_json: Path
@@ -56,6 +87,7 @@ class Config:
     safety: SafetyThresholds
     tier_mapping: TierMapping
     ops_paths: OpsPaths
+    alert: AlertConfig
 
 
 @dataclass(frozen=True)
@@ -94,17 +126,14 @@ def _load_env_file(path: Path) -> dict[str, str]:
         if not line or line.startswith("#"):
             continue
         if "=" not in line:
-            raise ValueError(
-                f"line {line_no}: not KEY=value, comment, or blank: {raw_line!r}"
-            )
+            raise ValueError(f"line {line_no}: not KEY=value, comment, or blank: {raw_line!r}")
         key, _, value = line.partition("=")
         key = key.strip()
         value = value.strip()
         if not key:
             raise ValueError(f"line {line_no}: empty key: {raw_line!r}")
         if len(value) >= 2 and (
-            (value[0] == '"' and value[-1] == '"')
-            or (value[0] == "'" and value[-1] == "'")
+            (value[0] == '"' and value[-1] == '"') or (value[0] == "'" and value[-1] == "'")
         ):
             value = value[1:-1]
         elif value and (value[0] in ('"', "'") or value[-1] in ('"', "'")):
@@ -113,14 +142,10 @@ def _load_env_file(path: Path) -> dict[str, str]:
     return result
 
 
-def _resolve_paths(
-    config_path: Path | None, env_path: Path | None
-) -> tuple[Path, Path]:
+def _resolve_paths(config_path: Path | None, env_path: Path | None) -> tuple[Path, Path]:
     config_dir = os.environ.get("DOOR_SYNC_CONFIG_DIR")
     if config_path is None:
-        config_path = (
-            Path(config_dir) / "config.toml" if config_dir else Path("config.toml")
-        )
+        config_path = Path(config_dir) / "config.toml" if config_dir else Path("config.toml")
     if env_path is None:
         env_path = Path(config_dir) / "env" if config_dir else Path(".env")
     return config_path, env_path
@@ -139,9 +164,7 @@ def load(
         with config_path.open("rb") as f:
             data: dict[str, Any] = tomllib.load(f)
     except FileNotFoundError as exc:
-        issues.append(
-            ConfigIssue(path="config_file", message=f"file not found: {config_path}")
-        )
+        issues.append(ConfigIssue(path="config_file", message=f"file not found: {config_path}"))
         raise ConfigError(issues) from exc
     except tomllib.TOMLDecodeError as e:
         issues.append(ConfigIssue(path="config_file", message=f"invalid TOML: {e}"))
@@ -166,6 +189,7 @@ def load(
     safety = _validate_safety(data, issues)
     tier_mapping = _validate_tier_mapping(data, issues)
     ops_paths = _validate_ops(data, issues)
+    alert_config = _validate_alert(data, issues, env_get)
 
     if issues:
         raise ConfigError(issues)
@@ -177,6 +201,7 @@ def load(
         safety=safety,
         tier_mapping=tier_mapping,
         ops_paths=ops_paths,
+        alert=alert_config,
     )
 
 
@@ -212,9 +237,7 @@ def _validate_civicrm(
         section = {}
     host = section.get("host", "")
     if not isinstance(host, str) or not host:
-        issues.append(
-            ConfigIssue(path="civicrm.host", message="must be non-empty string")
-        )
+        issues.append(ConfigIssue(path="civicrm.host", message="must be non-empty string"))
         host = ""
     elif not host.startswith("https://"):
         issues.append(
@@ -258,9 +281,7 @@ def _validate_civicrm(
                 )
             )
             card_id_field = ""
-    return CivicrmConfig(
-        host=host, api_key=api_key, card_id_field=card_id_field
-    )
+    return CivicrmConfig(host=host, api_key=api_key, card_id_field=card_id_field)
 
 
 def _validate_unifi(
@@ -274,9 +295,7 @@ def _validate_unifi(
         section = {}
     host = section.get("host", "")
     if not isinstance(host, str) or not host:
-        issues.append(
-            ConfigIssue(path="unifi.host", message="must be non-empty string")
-        )
+        issues.append(ConfigIssue(path="unifi.host", message="must be non-empty string"))
         host = ""
     elif not host.startswith("https://"):
         issues.append(
@@ -341,9 +360,7 @@ def _validate_unifi(
     )
 
 
-def _validate_safety(
-    data: dict[str, Any], issues: list[ConfigIssue]
-) -> SafetyThresholds:
+def _validate_safety(data: dict[str, Any], issues: list[ConfigIssue]) -> SafetyThresholds:
     section = data.get("safety", {})
     if not isinstance(section, dict):
         issues.append(ConfigIssue(path="safety", message="must be a table"))
@@ -408,9 +425,7 @@ _DEFAULT_OPS_PATHS = OpsPaths(
 )
 
 
-def _validate_ops(
-    data: dict[str, Any], issues: list[ConfigIssue]
-) -> OpsPaths:
+def _validate_ops(data: dict[str, Any], issues: list[ConfigIssue]) -> OpsPaths:
     section = data.get("ops", {})
     if not isinstance(section, dict):
         issues.append(ConfigIssue(path="ops", message="must be a table"))
@@ -437,18 +452,230 @@ def _validate_ops(
     )
 
 
-def _validate_tier_mapping(
-    data: dict[str, Any], issues: list[ConfigIssue]
-) -> TierMapping:
+_VALID_TRANSPORTS = frozenset({"flag-file", "smtp", "mailgun"})
+
+
+def _validate_alert(
+    data: dict[str, Any],
+    issues: list[ConfigIssue],
+    env_get: EnvGetter,
+) -> AlertConfig:
+    section = data.get("alert", {})
+    if not isinstance(section, dict):
+        issues.append(ConfigIssue(path="alert", message="must be a table"))
+        return _DEFAULT_ALERT_CONFIG
+
+    transport = section.get("transport", "flag-file")
+    if transport not in _VALID_TRANSPORTS:
+        issues.append(
+            ConfigIssue(
+                path="alert.transport",
+                message=f"must be one of flag-file/smtp/mailgun, got {transport!r}",
+            )
+        )
+        return _DEFAULT_ALERT_CONFIG
+
+    smtp: SmtpConfig | None = None
+    mailgun: MailgunConfig | None = None
+
+    if transport == "smtp":
+        smtp = _validate_smtp(section, issues, env_get)
+    elif transport == "mailgun":
+        mailgun = _validate_mailgun(section, issues, env_get)
+
+    return AlertConfig(
+        transport=cast(Literal["flag-file", "smtp", "mailgun"], transport),
+        smtp=smtp,
+        mailgun=mailgun,
+    )
+
+
+def _validate_email_addrs(
+    raw: Any,
+    path: str,
+    issues: list[ConfigIssue],
+) -> tuple[str, ...]:
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list) or not raw:
+        issues.append(ConfigIssue(path=path, message="must be a non-empty list of email addresses"))
+        return ()
+    addrs: list[str] = []
+    for i, addr in enumerate(raw):
+        if not isinstance(addr, str) or not _EMAIL_RE.match(addr):
+            issues.append(
+                ConfigIssue(
+                    path=f"{path}[{i}]",
+                    message=f"invalid email address: {addr!r}",
+                )
+            )
+        else:
+            addrs.append(addr)
+    return tuple(addrs)
+
+
+def _validate_smtp(
+    section: dict[str, Any],
+    issues: list[ConfigIssue],
+    env_get: EnvGetter,
+) -> SmtpConfig:
+    smtp = section.get("smtp", {})
+    if not isinstance(smtp, dict):
+        issues.append(ConfigIssue(path="alert.smtp", message="must be a table"))
+        smtp = {}
+
+    host = smtp.get("host", "")
+    if not isinstance(host, str) or not host:
+        issues.append(ConfigIssue(path="alert.smtp.host", message="must be non-empty string"))
+        host = ""
+
+    port = smtp.get("port", 587)
+    if isinstance(port, bool) or not isinstance(port, int):
+        issues.append(
+            ConfigIssue(
+                path="alert.smtp.port",
+                message=f"must be int, got {type(port).__name__}",
+            )
+        )
+        port = 587
+    elif not (1 <= port <= 65535):
+        issues.append(
+            ConfigIssue(
+                path="alert.smtp.port",
+                message=f"must be between 1 and 65535, got {port}",
+            )
+        )
+        port = 587
+
+    starttls = smtp.get("starttls", True)
+    if not isinstance(starttls, bool):
+        issues.append(
+            ConfigIssue(
+                path="alert.smtp.starttls",
+                message=f"must be bool, got {type(starttls).__name__}",
+            )
+        )
+        starttls = True
+
+    from_addr = smtp.get("from", "")
+    if not isinstance(from_addr, str) or not _EMAIL_RE.match(from_addr):
+        issues.append(
+            ConfigIssue(
+                path="alert.smtp.from",
+                message=f"must be a valid email address, got {from_addr!r}",
+            )
+        )
+        from_addr = ""
+
+    to_addrs = _validate_email_addrs(smtp.get("to"), "alert.smtp.to", issues)
+
+    subject_prefix = smtp.get("subject_prefix", "[door-sync]")
+    if not isinstance(subject_prefix, str):
+        issues.append(
+            ConfigIssue(
+                path="alert.smtp.subject_prefix",
+                message=f"must be string, got {type(subject_prefix).__name__}",
+            )
+        )
+        subject_prefix = "[door-sync]"
+
+    username = (env_get("SMTP_USERNAME") or "").strip()
+    if not username:
+        issues.append(
+            ConfigIssue(
+                path="SMTP_USERNAME",
+                message="required env var is missing or empty when alert.transport is 'smtp'",
+            )
+        )
+    password = (env_get("SMTP_PASSWORD") or "").strip()
+    if not password:
+        issues.append(
+            ConfigIssue(
+                path="SMTP_PASSWORD",
+                message="required env var is missing or empty when alert.transport is 'smtp'",
+            )
+        )
+
+    return SmtpConfig(
+        host=host,
+        port=port,
+        starttls=starttls,
+        username=username,
+        password=password,
+        from_addr=from_addr,
+        to_addrs=to_addrs,
+        subject_prefix=subject_prefix,
+    )
+
+
+def _validate_mailgun(
+    section: dict[str, Any],
+    issues: list[ConfigIssue],
+    env_get: EnvGetter,
+) -> MailgunConfig:
+    mg = section.get("mailgun", {})
+    if not isinstance(mg, dict):
+        issues.append(ConfigIssue(path="alert.mailgun", message="must be a table"))
+        mg = {}
+
+    domain = mg.get("domain", "")
+    if not isinstance(domain, str) or not domain:
+        issues.append(
+            ConfigIssue(
+                path="alert.mailgun.domain",
+                message="must be non-empty string",
+            )
+        )
+        domain = ""
+
+    from_addr = mg.get("from", "")
+    if not isinstance(from_addr, str) or not _EMAIL_RE.match(from_addr):
+        issues.append(
+            ConfigIssue(
+                path="alert.mailgun.from",
+                message=f"must be a valid email address, got {from_addr!r}",
+            )
+        )
+        from_addr = ""
+
+    to_addrs = _validate_email_addrs(mg.get("to"), "alert.mailgun.to", issues)
+
+    subject_prefix = mg.get("subject_prefix", "[door-sync]")
+    if not isinstance(subject_prefix, str):
+        issues.append(
+            ConfigIssue(
+                path="alert.mailgun.subject_prefix",
+                message=f"must be string, got {type(subject_prefix).__name__}",
+            )
+        )
+        subject_prefix = "[door-sync]"
+
+    api_key = (env_get("MAILGUN_API_KEY") or "").strip()
+    if not api_key:
+        issues.append(
+            ConfigIssue(
+                path="MAILGUN_API_KEY",
+                message="required env var is missing or empty when alert.transport is 'mailgun'",
+            )
+        )
+
+    return MailgunConfig(
+        domain=domain,
+        api_key=api_key,
+        from_addr=from_addr,
+        to_addrs=to_addrs,
+        subject_prefix=subject_prefix,
+    )
+
+
+def _validate_tier_mapping(data: dict[str, Any], issues: list[ConfigIssue]) -> TierMapping:
     section = data.get("tier_mapping", {})
     if not isinstance(section, dict):
         issues.append(ConfigIssue(path="tier_mapping", message="must be a table"))
         section = {}
     rules_data = section.get("rules", {})
     if not isinstance(rules_data, dict):
-        issues.append(
-            ConfigIssue(path="tier_mapping.rules", message="must be a table")
-        )
+        issues.append(ConfigIssue(path="tier_mapping.rules", message="must be a table"))
         rules_data = {}
 
     rules: dict[str, TierRule] = {}

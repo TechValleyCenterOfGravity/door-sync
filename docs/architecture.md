@@ -105,7 +105,7 @@ door-sync/
 | `scheduler` | The main loop; signal handling | `orchestrator`, `config` |
 | `audit` | JSON-lines structured log of every diff applied or halted | `models` |
 | `state` | Persisting last-success timestamp | stdlib only |
-| `alert` | Sending alerts on halt or repeated failure | `config` |
+| `alert` | Sending alerts on halt or repeated failure (flag-file + optional SMTP or Mailgun) | `config`, `httpx` (Mailgun), `smtplib` (SMTP) |
 | `webhook` | (future) HTTP receiver for Appendix C day pass flow | `orchestrator`, `unifi.client` |
 
 **Strict layering:** modules higher in this table do not import modules lower. The orchestrator imports everything; nothing imports the orchestrator except `scheduler` and (eventually) `webhook`.
@@ -394,7 +394,7 @@ These decisions are intentionally deferred. When implementing them, update this 
 |---|---|---|
 | CiviCRM client API surface (method signatures) | `civicrm/client.py` + new §14 here | Determined by API4 query needs |
 | UniFi client API surface (method signatures) | `unifi/client.py` + new §15 here | Constrained by UniFi Access API capabilities |
-| Alerting transport | `alert.py` + new §17 here | Flag-file stub is shipped (presence = active alert, contents = reason); SMTP/webhook transport TBD |
+| ~~Alerting transport~~ | `alert.py` | ~~Implemented: flag-file (always), SMTP, Mailgun HTTP API. Config in `[alert]` TOML table; secrets in env.~~ |
 | Retry/backoff specifics | inside both clients | Per design guide §8 |
 | Packaging and deployment specifics | `pyproject.toml` + README | Standard `uv` workflow (`uv sync`, `uv run`, committed `uv.lock`) |
 

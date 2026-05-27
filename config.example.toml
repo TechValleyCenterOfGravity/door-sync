@@ -54,6 +54,31 @@ rank = 50
 resolution = "day-pass"
 rank = 10
 
+# Alert transport. Options: "flag-file" (default), "smtp", "mailgun".
+# The flag file is always written regardless of transport — external
+# monitoring can detect halts without the email transport being configured.
+# Un-comment ONE of the transport sections below.
+
+# [alert]
+# transport = "mailgun"
+#
+# [alert.mailgun]
+# domain = "mg.example.com"
+# from = "door-sync@mg.example.com"
+# to = ["admin@example.com"]
+# subject_prefix = "[door-sync]"
+
+# [alert]
+# transport = "smtp"
+#
+# [alert.smtp]
+# host = "smtp.example.com"
+# port = 587
+# starttls = true
+# from = "door-sync@example.com"
+# to = ["admin@example.com"]
+# subject_prefix = "[door-sync]"
+
 [ops]
 # Operational file paths. All three are optional; defaults shown.
 # - audit_jsonl: append-only JSONL of every cycle's outcome (logrotate-friendly).

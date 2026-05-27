@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from door_sync.config import (
+    _DEFAULT_ALERT_CONFIG,
     _DEFAULT_OPS_PATHS,
     CivicrmConfig,
     Config,
@@ -32,10 +33,13 @@ def test_config_is_frozen() -> None:
     c = Config(
         cadence_seconds=600,
         civicrm=CivicrmConfig(host="https://x", api_key="k", card_id_field="G.f"),
-        unifi=UnifiConfig(host="https://y", api_key="k", tls_fingerprint="AB" * 32, facility_code=0),
+        unifi=UnifiConfig(
+            host="https://y", api_key="k", tls_fingerprint="AB" * 32, facility_code=0
+        ),
         safety=SafetyThresholds(),
         tier_mapping=TierMapping(rules={}),
         ops_paths=_DEFAULT_OPS_PATHS,
+        alert=_DEFAULT_ALERT_CONFIG,
     )
     with pytest.raises(FrozenInstanceError):
         c.cadence_seconds = 60  # type: ignore[misc]
@@ -163,33 +167,29 @@ def test_env_file_trailing_orphan_quote_raises(tmp_path: Path) -> None:
 # --- path resolution tests ---
 
 
-def test_explicit_paths_override_defaults(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_explicit_paths_override_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
     cfg = tmp_path / "custom.toml"
     env = tmp_path / "custom-env"
     cfg.write_text(
-        'cadence_seconds = 600\n'
+        "cadence_seconds = 600\n"
         '[civicrm]\nhost = "https://c"\ncard_id_field = "G.f"\n'
         '[unifi]\nhost = "https://u"\n'
         'tls_fingerprint = "' + "AB" * 32 + '"\n'
-        'facility_code = 42\n'
+        "facility_code = 42\n"
     )
     env.write_text("CIVICRM_API_KEY=x\nUNIFI_API_KEY=y\n")
     result = load(config_path=cfg, env_path=env)
     assert result.civicrm.host == "https://c"
 
 
-def test_env_var_dir_supplies_defaults(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_env_var_dir_supplies_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (tmp_path / "config.toml").write_text(
-        'cadence_seconds = 600\n'
+        "cadence_seconds = 600\n"
         '[civicrm]\nhost = "https://c"\ncard_id_field = "G.f"\n'
         '[unifi]\nhost = "https://u"\n'
         'tls_fingerprint = "' + "AB" * 32 + '"\n'
-        'facility_code = 42\n'
+        "facility_code = 42\n"
     )
     (tmp_path / "env").write_text("CIVICRM_API_KEY=x\nUNIFI_API_KEY=y\n")
     monkeypatch.setenv("DOOR_SYNC_CONFIG_DIR", str(tmp_path))
@@ -223,8 +223,7 @@ def _write_minimal_valid(tmp_path: Path, extra_toml: str = "") -> tuple[Path, Pa
         "[unifi]\n"
         'host = "https://unifi.example.org"\n'
         'tls_fingerprint = "' + ("AB:" * 31 + "AB") + '"\n'
-        "facility_code = 42\n"
-        + extra_toml
+        "facility_code = 42\n" + extra_toml
     )
     env.write_text("CIVICRM_API_KEY=civikey\nUNIFI_API_KEY=unifikey\n")
     return cfg, env
@@ -238,7 +237,7 @@ def test_load_happy_path_returns_populated_config(
     cfg.write_text(
         cfg.read_text()
         + "[safety]\nmass_deactivate_pct = 0.10\n"
-        + '[tier_mapping.rules.Gold]\n'
+        + "[tier_mapping.rules.Gold]\n"
         + 'resolution = "tier"\ntarget_policy = "P_GOLD"\nrank = 100\n'
     )
     result = load(config_path=cfg, env_path=env)
@@ -290,23 +289,17 @@ def test_cadence_validation(
         assert any(i.path == "cadence_seconds" for i in exc.value.issues)
 
 
-def test_cadence_rejects_boolean_true(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_cadence_rejects_boolean_true(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """TOML 'true' parses to Python True (a bool), which our validator rejects as not-an-int."""
     monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
     cfg, env = _write_minimal_valid(tmp_path)
-    cfg.write_text(
-        cfg.read_text().replace("cadence_seconds = 600", "cadence_seconds = true")
-    )
+    cfg.write_text(cfg.read_text().replace("cadence_seconds = 600", "cadence_seconds = true"))
     with pytest.raises(ConfigError) as exc:
         load(config_path=cfg, env_path=env)
     assert any(i.path == "cadence_seconds" for i in exc.value.issues)
 
 
-def test_cadence_default_when_omitted(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_cadence_default_when_omitted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
     cfg, env = _write_minimal_valid(tmp_path)
     cfg.write_text(cfg.read_text().replace("cadence_seconds = 600\n", ""))
@@ -372,11 +365,11 @@ def test_unifi_host_validation(
 @pytest.mark.parametrize(
     "fingerprint, expected_ok",
     [
-        ("AB" * 32, True),                          # 64 hex chars
-        ("ab" * 32, True),                          # lowercase
-        ("AB:" * 31 + "AB", True),                  # colon-separated
-        ("AB" * 31, False),                         # 62 chars — too short
-        ("XYZ" + "AB" * 31, False),                 # non-hex
+        ("AB" * 32, True),  # 64 hex chars
+        ("ab" * 32, True),  # lowercase
+        ("AB:" * 31 + "AB", True),  # colon-separated
+        ("AB" * 31, False),  # 62 chars — too short
+        ("XYZ" + "AB" * 31, False),  # non-hex
         ("", False),
     ],
 )
@@ -419,18 +412,14 @@ def test_safety_pct_validation(
     """Each value is rendered into TOML as-is. Strings must be pre-quoted."""
     monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
     cfg, env = _write_minimal_valid(tmp_path)
-    cfg.write_text(
-        cfg.read_text() + f"[safety]\nmass_deactivate_pct = {pct_value}\n"
-    )
+    cfg.write_text(cfg.read_text() + f"[safety]\nmass_deactivate_pct = {pct_value}\n")
     if expected_ok:
         result = load(config_path=cfg, env_path=env)
         assert result.safety.mass_deactivate_pct == float(pct_value)
     else:
         with pytest.raises(ConfigError) as exc:
             load(config_path=cfg, env_path=env)
-        assert any(
-            i.path == "safety.mass_deactivate_pct" for i in exc.value.issues
-        )
+        assert any(i.path == "safety.mass_deactivate_pct" for i in exc.value.issues)
 
 
 def test_baseline_floor_validation_passes_zero(
@@ -460,23 +449,19 @@ def test_civicrm_missing_card_id_field_is_reported(
     """card_id_field key absent from TOML → ConfigError."""
     monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
     cfg, env = _write_minimal_valid(tmp_path)
-    cfg.write_text(
-        cfg.read_text().replace('card_id_field = "Door_Access.card_id"\n', "")
-    )
+    cfg.write_text(cfg.read_text().replace('card_id_field = "Door_Access.card_id"\n', ""))
     with pytest.raises(ConfigError) as exc:
         load(config_path=cfg, env_path=env)
-    assert any(
-        i.path == "civicrm.card_id_field" for i in exc.value.issues
-    )
+    assert any(i.path == "civicrm.card_id_field" for i in exc.value.issues)
 
 
 @pytest.mark.parametrize(
     "bad_value",
     [
-        '""',                          # empty string
-        '"   "',                       # whitespace-only
-        '"Door Access.card_id"',       # internal space
-        '"Door_Access\\t.card_id"',    # internal tab
+        '""',  # empty string
+        '"   "',  # whitespace-only
+        '"Door Access.card_id"',  # internal space
+        '"Door_Access\\t.card_id"',  # internal tab
     ],
 )
 def test_civicrm_card_id_field_rejects_bad_values(
@@ -495,9 +480,7 @@ def test_civicrm_card_id_field_rejects_bad_values(
     )
     with pytest.raises(ConfigError) as exc:
         load(config_path=cfg, env_path=env)
-    assert any(
-        i.path == "civicrm.card_id_field" for i in exc.value.issues
-    )
+    assert any(i.path == "civicrm.card_id_field" for i in exc.value.issues)
 
 
 def test_civicrm_card_id_field_strips_whitespace(
@@ -521,16 +504,10 @@ def test_tier_rule_tier_requires_target_policy(
 ) -> None:
     monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
     cfg, env = _write_minimal_valid(tmp_path)
-    cfg.write_text(
-        cfg.read_text()
-        + '[tier_mapping.rules.Gold]\nresolution = "tier"\nrank = 1\n'
-    )
+    cfg.write_text(cfg.read_text() + '[tier_mapping.rules.Gold]\nresolution = "tier"\nrank = 1\n')
     with pytest.raises(ConfigError) as exc:
         load(config_path=cfg, env_path=env)
-    assert any(
-        i.path == "tier_mapping.rules.Gold.target_policy"
-        for i in exc.value.issues
-    )
+    assert any(i.path == "tier_mapping.rules.Gold.target_policy" for i in exc.value.issues)
 
 
 def test_tier_rule_non_tier_forbids_target_policy(
@@ -540,54 +517,36 @@ def test_tier_rule_non_tier_forbids_target_policy(
     cfg, env = _write_minimal_valid(tmp_path)
     cfg.write_text(
         cfg.read_text()
-        + '[tier_mapping.rules.Comp]\n'
+        + "[tier_mapping.rules.Comp]\n"
         + 'resolution = "none"\ntarget_policy = "P_SHOULD_NOT_BE_HERE"\nrank = 1\n'
     )
     with pytest.raises(ConfigError) as exc:
         load(config_path=cfg, env_path=env)
-    assert any(
-        i.path == "tier_mapping.rules.Comp.target_policy"
-        for i in exc.value.issues
-    )
+    assert any(i.path == "tier_mapping.rules.Comp.target_policy" for i in exc.value.issues)
 
 
-def test_tier_rule_invalid_resolution(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_tier_rule_invalid_resolution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
     cfg, env = _write_minimal_valid(tmp_path)
-    cfg.write_text(
-        cfg.read_text()
-        + '[tier_mapping.rules.Weird]\nresolution = "xyz"\nrank = 1\n'
-    )
+    cfg.write_text(cfg.read_text() + '[tier_mapping.rules.Weird]\nresolution = "xyz"\nrank = 1\n')
     with pytest.raises(ConfigError) as exc:
         load(config_path=cfg, env_path=env)
-    assert any(
-        i.path == "tier_mapping.rules.Weird.resolution"
-        for i in exc.value.issues
-    )
+    assert any(i.path == "tier_mapping.rules.Weird.resolution" for i in exc.value.issues)
 
 
-def test_tier_rule_invalid_rank(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_tier_rule_invalid_rank(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Rank must be an int. Strings, bools, and missing values are all rejected."""
     monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
     cfg, env = _write_minimal_valid(tmp_path)
     cfg.write_text(
-        cfg.read_text()
-        + '[tier_mapping.rules.Bad]\nresolution = "none"\nrank = "oops"\n'
+        cfg.read_text() + '[tier_mapping.rules.Bad]\nresolution = "none"\nrank = "oops"\n'
     )
     with pytest.raises(ConfigError) as exc:
         load(config_path=cfg, env_path=env)
-    assert any(
-        i.path == "tier_mapping.rules.Bad.rank" for i in exc.value.issues
-    )
+    assert any(i.path == "tier_mapping.rules.Bad.rank" for i in exc.value.issues)
 
 
-def test_tier_mapping_empty_rules_is_valid(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_tier_mapping_empty_rules_is_valid(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
     cfg, env = _write_minimal_valid(tmp_path)
     # No [tier_mapping.rules.*] tables — valid TOML, empty mapping
@@ -595,9 +554,7 @@ def test_tier_mapping_empty_rules_is_valid(
     assert result.tier_mapping.rules == {}
 
 
-def test_load_collects_multiple_issues(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_load_collects_multiple_issues(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
     monkeypatch.delenv("CIVICRM_API_KEY", raising=False)
     monkeypatch.delenv("UNIFI_API_KEY", raising=False)
@@ -626,9 +583,7 @@ def test_load_collects_multiple_issues(
 # --- env precedence tests ---
 
 
-def test_env_file_wins_over_os_environ(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_env_file_wins_over_os_environ(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
     cfg, env = _write_minimal_valid(tmp_path)
     env.write_text("CIVICRM_API_KEY=from_file\nUNIFI_API_KEY=from_file\n")
@@ -739,6 +694,10 @@ def test_example_files_parse(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.ops_paths.audit_jsonl == Path("/var/log/door-sync/audit.jsonl")
     assert result.ops_paths.state_json == Path("/var/lib/door-sync/state.json")
     assert result.ops_paths.alert_flag == Path("/var/run/door-sync/alert.flag")
+    # alert — commented out in example, defaults to flag-file
+    assert result.alert.transport == "flag-file"
+    assert result.alert.smtp is None
+    assert result.alert.mailgun is None
 
 
 # --- facility_code tests ---
@@ -750,16 +709,12 @@ def test_load_rejects_missing_facility_code(tmp_path: Path) -> None:
     # Strip the facility_code line we just added in the helper.
     content = cfg.read_text()
     content = "\n".join(
-        line for line in content.splitlines()
-        if not line.strip().startswith("facility_code")
+        line for line in content.splitlines() if not line.strip().startswith("facility_code")
     )
     cfg.write_text(content)
     with pytest.raises(ConfigError) as exc_info:
         load(config_path=cfg, env_path=env)
-    assert any(
-        i.path == "unifi.facility_code"
-        for i in exc_info.value.issues
-    )
+    assert any(i.path == "unifi.facility_code" for i in exc_info.value.issues)
 
 
 @pytest.mark.parametrize(
@@ -771,31 +726,25 @@ def test_load_rejects_missing_facility_code(tmp_path: Path) -> None:
         ("true", "must be int"),
     ],
 )
-def test_load_rejects_invalid_facility_code(
-    tmp_path: Path, value: str, reason: str
-) -> None:
+def test_load_rejects_invalid_facility_code(tmp_path: Path, value: str, reason: str) -> None:
     """Out-of-range or wrong-type facility_code raises with helpful message."""
     cfg, env = _write_minimal_valid(tmp_path)
     content = cfg.read_text()
     # Replace the facility_code = 42 line.
     content = "\n".join(
-        f"facility_code = {value}" if line.strip().startswith("facility_code")
-        else line
+        f"facility_code = {value}" if line.strip().startswith("facility_code") else line
         for line in content.splitlines()
     )
     cfg.write_text(content)
     with pytest.raises(ConfigError) as exc_info:
         load(config_path=cfg, env_path=env)
     assert any(
-        i.path == "unifi.facility_code" and reason in i.message
-        for i in exc_info.value.issues
+        i.path == "unifi.facility_code" and reason in i.message for i in exc_info.value.issues
     ), [i for i in exc_info.value.issues]
 
 
 @pytest.mark.parametrize("code", [0, 255])
-def test_load_accepts_facility_code_boundary_values(
-    tmp_path: Path, code: int
-) -> None:
+def test_load_accepts_facility_code_boundary_values(tmp_path: Path, code: int) -> None:
     """Range check is inclusive on both ends: 0 and 255 are valid."""
     config_path, env_path = _write_minimal_valid(tmp_path)
     content = config_path.read_text()
@@ -840,10 +789,7 @@ def test_ops_paths_explicit_values_override_defaults(tmp_path: Path) -> None:
 def test_ops_paths_rejects_non_string_value(tmp_path: Path) -> None:
     cfg_path, env_path = _write_minimal_valid(
         tmp_path,
-        extra_toml=(
-            "\n[ops]\n"
-            "audit_jsonl = 42\n"
-        ),
+        extra_toml=("\n[ops]\naudit_jsonl = 42\n"),
     )
 
     with pytest.raises(ConfigError) as excinfo:
@@ -851,3 +797,191 @@ def test_ops_paths_rejects_non_string_value(tmp_path: Path) -> None:
 
     paths = [issue.path for issue in excinfo.value.issues]
     assert "ops.audit_jsonl" in paths
+
+
+# --- alert config tests ---
+
+
+def test_alert_defaults_to_flag_file_when_omitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(tmp_path)
+    result = load(config_path=cfg, env_path=env)
+    assert result.alert.transport == "flag-file"
+    assert result.alert.smtp is None
+    assert result.alert.mailgun is None
+
+
+def test_alert_rejects_invalid_transport(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(tmp_path, extra_toml='\n[alert]\ntransport = "webhook"\n')
+    with pytest.raises(ConfigError) as exc:
+        load(config_path=cfg, env_path=env)
+    assert any(i.path == "alert.transport" for i in exc.value.issues)
+
+
+def test_alert_mailgun_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(
+        tmp_path,
+        extra_toml=(
+            '\n[alert]\ntransport = "mailgun"\n'
+            "[alert.mailgun]\n"
+            'domain = "mg.example.com"\n'
+            'from = "sync@mg.example.com"\n'
+            'to = ["admin@example.com"]\n'
+            'subject_prefix = "[ds]"\n'
+        ),
+    )
+    env.write_text(env.read_text() + "MAILGUN_API_KEY=key-test\n")
+    result = load(config_path=cfg, env_path=env)
+    assert result.alert.transport == "mailgun"
+    assert result.alert.mailgun is not None
+    assert result.alert.mailgun.domain == "mg.example.com"
+    assert result.alert.mailgun.api_key == "key-test"
+    assert result.alert.mailgun.from_addr == "sync@mg.example.com"
+    assert result.alert.mailgun.to_addrs == ("admin@example.com",)
+    assert result.alert.mailgun.subject_prefix == "[ds]"
+
+
+def test_alert_mailgun_missing_api_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("MAILGUN_API_KEY", raising=False)
+    cfg, env = _write_minimal_valid(
+        tmp_path,
+        extra_toml=(
+            '\n[alert]\ntransport = "mailgun"\n'
+            "[alert.mailgun]\n"
+            'domain = "mg.example.com"\n'
+            'from = "sync@mg.example.com"\n'
+            'to = ["admin@example.com"]\n'
+        ),
+    )
+    with pytest.raises(ConfigError) as exc:
+        load(config_path=cfg, env_path=env)
+    assert any(i.path == "MAILGUN_API_KEY" for i in exc.value.issues)
+
+
+def test_alert_mailgun_missing_domain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(
+        tmp_path,
+        extra_toml=(
+            '\n[alert]\ntransport = "mailgun"\n'
+            "[alert.mailgun]\n"
+            'from = "sync@mg.example.com"\n'
+            'to = ["admin@example.com"]\n'
+        ),
+    )
+    env.write_text(env.read_text() + "MAILGUN_API_KEY=key-test\n")
+    with pytest.raises(ConfigError) as exc:
+        load(config_path=cfg, env_path=env)
+    assert any(i.path == "alert.mailgun.domain" for i in exc.value.issues)
+
+
+def test_alert_mailgun_invalid_from_addr(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(
+        tmp_path,
+        extra_toml=(
+            '\n[alert]\ntransport = "mailgun"\n'
+            "[alert.mailgun]\n"
+            'domain = "mg.example.com"\n'
+            'from = "not-an-email"\n'
+            'to = ["admin@example.com"]\n'
+        ),
+    )
+    env.write_text(env.read_text() + "MAILGUN_API_KEY=key-test\n")
+    with pytest.raises(ConfigError) as exc:
+        load(config_path=cfg, env_path=env)
+    assert any(i.path == "alert.mailgun.from" for i in exc.value.issues)
+
+
+def test_alert_mailgun_to_accepts_single_string(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(
+        tmp_path,
+        extra_toml=(
+            '\n[alert]\ntransport = "mailgun"\n'
+            "[alert.mailgun]\n"
+            'domain = "mg.example.com"\n'
+            'from = "sync@mg.example.com"\n'
+            'to = "admin@example.com"\n'
+        ),
+    )
+    env.write_text(env.read_text() + "MAILGUN_API_KEY=key-test\n")
+    result = load(config_path=cfg, env_path=env)
+    assert result.alert.mailgun is not None
+    assert result.alert.mailgun.to_addrs == ("admin@example.com",)
+
+
+def test_alert_smtp_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(
+        tmp_path,
+        extra_toml=(
+            '\n[alert]\ntransport = "smtp"\n'
+            "[alert.smtp]\n"
+            'host = "smtp.example.com"\n'
+            "port = 587\n"
+            "starttls = true\n"
+            'from = "sync@example.com"\n'
+            'to = ["admin@example.com"]\n'
+        ),
+    )
+    env.write_text(env.read_text() + "SMTP_USERNAME=user\nSMTP_PASSWORD=pass\n")
+    result = load(config_path=cfg, env_path=env)
+    assert result.alert.transport == "smtp"
+    assert result.alert.smtp is not None
+    assert result.alert.smtp.host == "smtp.example.com"
+    assert result.alert.smtp.port == 587
+    assert result.alert.smtp.starttls is True
+    assert result.alert.smtp.username == "user"
+    assert result.alert.smtp.password == "pass"
+    assert result.alert.smtp.from_addr == "sync@example.com"
+
+
+def test_alert_smtp_missing_credentials(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("SMTP_USERNAME", raising=False)
+    monkeypatch.delenv("SMTP_PASSWORD", raising=False)
+    cfg, env = _write_minimal_valid(
+        tmp_path,
+        extra_toml=(
+            '\n[alert]\ntransport = "smtp"\n'
+            "[alert.smtp]\n"
+            'host = "smtp.example.com"\n'
+            "port = 587\n"
+            "starttls = true\n"
+            'from = "sync@example.com"\n'
+            'to = ["admin@example.com"]\n'
+        ),
+    )
+    with pytest.raises(ConfigError) as exc:
+        load(config_path=cfg, env_path=env)
+    paths = {i.path for i in exc.value.issues}
+    assert "SMTP_USERNAME" in paths
+    assert "SMTP_PASSWORD" in paths
+
+
+def test_alert_smtp_rejects_invalid_port(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(
+        tmp_path,
+        extra_toml=(
+            '\n[alert]\ntransport = "smtp"\n'
+            "[alert.smtp]\n"
+            'host = "smtp.example.com"\n'
+            "port = 99999\n"
+            "starttls = true\n"
+            'from = "sync@example.com"\n'
+            'to = ["admin@example.com"]\n'
+        ),
+    )
+    env.write_text(env.read_text() + "SMTP_USERNAME=user\nSMTP_PASSWORD=pass\n")
+    with pytest.raises(ConfigError) as exc:
+        load(config_path=cfg, env_path=env)
+    assert any(i.path == "alert.smtp.port" for i in exc.value.issues)

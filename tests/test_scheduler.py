@@ -14,6 +14,7 @@ from pathlib import Path
 
 from door_sync import scheduler
 from door_sync.config import (
+    AlertConfig,
     CivicrmConfig,
     Config,
     OpsPaths,
@@ -51,6 +52,7 @@ def _config(tmp_path: Path, *, cadence_seconds: int = 600) -> Config:
             state_json=tmp_path / "state.json",
             alert_flag=tmp_path / "alert.flag",
         ),
+        alert=AlertConfig(transport="flag-file", smtp=None, mailgun=None),
     )
 
 

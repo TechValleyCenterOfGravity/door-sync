@@ -57,7 +57,7 @@ def run_forever(
         try:
             reconcile_fn(config, dry_run=dry_run)
         except Exception as exc:
-            orchestrator.handle_crash(exc, paths=config.ops_paths)
+            orchestrator.handle_crash(exc, paths=config.ops_paths, alert_config=config.alert)
         _logger.info("cycle complete; sleeping %ds", config.cadence_seconds)
         if shutdown_event.wait(timeout=config.cadence_seconds):
             break

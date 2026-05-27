@@ -12,14 +12,19 @@ import logging
 
 from door_sync import alert, audit, reconciler, safety, state, tier_mapping
 from door_sync.civicrm.client import CivicrmClient
-from door_sync.config import Config, OpsPaths
+from door_sync.config import AlertConfig, Config, OpsPaths
 from door_sync.models import ReconcileResult
 from door_sync.unifi.client import UnifiClient
 
 _logger = logging.getLogger("door_sync.orchestrator")
 
 
-def handle_crash(exc: Exception, *, paths: OpsPaths) -> None:
+def handle_crash(
+    exc: Exception,
+    *,
+    paths: OpsPaths,
+    alert_config: AlertConfig | None = None,
+) -> None:
     """Log + audit + alert on a reconcile cycle crash.
 
     Shared by one-shot (--once) and daemon mode so behavior stays symmetric.
@@ -32,6 +37,7 @@ def handle_crash(exc: Exception, *, paths: OpsPaths) -> None:
     alert.raise_(
         f"crashed: {type(exc).__name__}: {exc_msg}",
         path=paths.alert_flag,
+        alert_config=alert_config,
     )
 
 
@@ -58,10 +64,11 @@ def reconcile(config: Config, *, dry_run: bool) -> ReconcileResult:
                 path=paths.audit_jsonl,
                 facility_code=config.unifi.facility_code,
             )
-            # Raise alert even in dry-run: an operator running --dry-run still
-            # wants to know if safety would halt. The flag is cleared only by a
-            # successful live cycle.
-            alert.raise_(check.reason or "halted", path=paths.alert_flag)
+            alert.raise_(
+                check.reason or "halted",
+                path=paths.alert_flag,
+                alert_config=config.alert,
+            )
             if not dry_run:
                 state.write_halt(paths.state_json, check.reason or "")
             return ReconcileResult(halted=True, reason=check.reason, diff=diff)
@@ -75,5 +82,5 @@ def reconcile(config: Config, *, dry_run: bool) -> ReconcileResult:
         )
         if not dry_run:
             state.write_success(paths.state_json)
-            alert.clear(path=paths.alert_flag)
+            alert.clear(path=paths.alert_flag, alert_config=config.alert)
         return ReconcileResult(halted=False, reason=None, diff=diff)
