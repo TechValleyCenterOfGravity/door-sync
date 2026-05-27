@@ -11,4 +11,4 @@ credentials and policies against a UniFi Access controller.
 
    usage
    architecture
-   api/index
+   api
