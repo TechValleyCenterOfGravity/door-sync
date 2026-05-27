@@ -140,34 +140,17 @@ These paths are configurable in ``config.toml`` under ``[ops]``.
 Installing the unit file
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
-Create ``/etc/systemd/system/door-sync.service``:
+A reference unit file is provided in the repository at
+``deploy/door-sync.service``. Copy it into place:
 
-.. code-block:: ini
+.. code-block:: bash
 
-   [Unit]
-   Description=door-sync CiviCRM to UniFi Access reconciliation daemon
-   After=network-online.target
-   Wants=network-online.target
+   sudo cp /opt/door-sync/deploy/door-sync.service /etc/systemd/system/
 
-   [Service]
-   Type=simple
-   User=door-sync
-   Group=door-sync
-   WorkingDirectory=/opt/door-sync
-   Environment=DOOR_SYNC_CONFIG_DIR=/etc/door-sync
-   ExecStart=/opt/door-sync/.venv/bin/door-sync run
-   Restart=on-failure
-   RestartSec=30
+The unit file contents:
 
-   # Hardening
-   NoNewPrivileges=yes
-   ProtectSystem=strict
-   ProtectHome=yes
-   ReadWritePaths=/var/log/door-sync /var/lib/door-sync /var/run/door-sync
-   PrivateTmp=yes
-
-   [Install]
-   WantedBy=multi-user.target
+.. literalinclude:: ../deploy/door-sync.service
+   :language: ini
 
 Enable and start the service:
 
@@ -203,16 +186,15 @@ Log rotation
 
 The audit log at ``/var/log/door-sync/audit.jsonl`` grows over time. It is
 compatible with logrotate's ``copytruncate`` strategy (the daemon opens the
-file in append mode per write, with no long-lived file handle). Create
-``/etc/logrotate.d/door-sync``:
+file in append mode per write, with no long-lived file handle).
 
-.. code-block:: text
+A reference logrotate config is provided at ``deploy/door-sync.logrotate``.
+Copy it into place:
 
-   /var/log/door-sync/audit.jsonl {
-       weekly
-       rotate 12
-       compress
-       missingok
-       notifempty
-       copytruncate
-   }
+.. code-block:: bash
+
+   sudo cp /opt/door-sync/deploy/door-sync.logrotate /etc/logrotate.d/door-sync
+
+The logrotate config contents:
+
+.. literalinclude:: ../deploy/door-sync.logrotate

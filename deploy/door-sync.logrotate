@@ -1,0 +1,8 @@
+/var/log/door-sync/audit.jsonl {
+    weekly
+    rotate 12
+    compress
+    missingok
+    notifempty
+    copytruncate
+}
