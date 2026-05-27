@@ -20,7 +20,6 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
-    "myst-parser>=5.1.0",
     "pyrefly>=1.0.0",
     "pytest>=9.0.3",
     "pytest-httpx>=0.30",

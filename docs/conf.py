@@ -13,7 +13,6 @@ extensions = [
     "sphinx.ext.napoleon",
     "sphinx.ext.intersphinx",
     "sphinx.ext.viewcode",
-    "myst_parser",
 ]
 
 templates_path = ["_templates"]
@@ -39,14 +38,4 @@ napoleon_use_rtype = True
 
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
-}
-
-myst_enable_extensions = [
-    "colon_fence",
-    "deflist",
-]
-
-source_suffix = {
-    ".rst": "restructuredtext",
-    ".md": "markdown",
 }

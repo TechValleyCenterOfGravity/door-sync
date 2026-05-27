@@ -10,5 +10,4 @@ credentials and policies against a UniFi Access controller.
    :caption: Contents
 
    usage
-   architecture
-   api
+   api/index
