@@ -10,3 +10,4 @@ build/
 .env
 .serena/
 .worktrees/
+docs/_build/
