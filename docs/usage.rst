@@ -56,19 +56,9 @@ Code   Meaning
 Configuration
 -------------
 
-Configuration is split across two files:
-
-- **TOML file** (``config.toml``): non-secret settings (hosts, thresholds, tier mapping rules)
-- **Env file** (``.env``): secrets (API keys, SMTP credentials)
-
-The config directory is resolved in order:
-
-1. Explicit ``--config`` / ``--env-file`` CLI flags
-2. ``$DOOR_SYNC_CONFIG_DIR`` environment variable
-3. Current working directory (``./config.toml``, ``./.env``)
-
-In production, files live at ``/etc/door-sync/config.toml`` and ``/etc/door-sync/env``
-(mode 0400).
+Configuration is split across two files: a TOML file for non-secret settings
+and an env file for secrets (API keys, SMTP credentials). See the
+:doc:`configuration` page for a complete reference of every setting.
 
 
 Deploying with systemd
