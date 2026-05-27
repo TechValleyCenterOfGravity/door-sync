@@ -34,6 +34,7 @@ def raise_(
     path: Path,
     alert_config: AlertConfig | None = None,
 ) -> None:
+    """Write flag file and, if configured, send an alert email."""
     _logger.error("ALERT: %s", reason)
     _write_flag(reason, path)
     if alert_config is not None:
@@ -45,6 +46,7 @@ def clear(
     path: Path,
     alert_config: AlertConfig | None = None,
 ) -> None:
+    """Remove flag file and, if configured, send a resolved email."""
     path.unlink(missing_ok=True)
     if alert_config is not None:
         _dispatch(alert_config, subject="RESOLVED", body="Previous alert cleared.")
