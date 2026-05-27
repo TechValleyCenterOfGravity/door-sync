@@ -79,21 +79,16 @@ class UnifiClient:
         # TLS 1.0 / 1.1. Modern Python+OpenSSL defaults are already 1.2+, but
         # setting this explicitly silences CodeQL and guards older builds.
         ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-        with socket.create_connection(
-            (hostname, port), timeout=10
-        ) as raw:
+        with socket.create_connection((hostname, port), timeout=10) as raw:
             with ctx.wrap_socket(raw, server_hostname=hostname) as wrapped:
                 cert_der = wrapped.getpeercert(binary_form=True)
         if cert_der is None:
             raise UnifiClientError("TLS handshake produced no peer certificate")
         actual_fp = hashlib.sha256(cert_der).hexdigest().lower()
-        expected_fp = (
-            self._config.tls_fingerprint.lower().replace(":", "")
-        )
+        expected_fp = self._config.tls_fingerprint.lower().replace(":", "")
         if actual_fp != expected_fp:
             raise UnifiClientError(
-                f"TLS fingerprint mismatch: expected {expected_fp[:16]}…, "
-                f"got {actual_fp[:16]}…"
+                f"TLS fingerprint mismatch: expected {expected_fp[:16]}…, got {actual_fp[:16]}…"
             )
 
     def _request(
@@ -111,9 +106,7 @@ class UnifiClient:
         """
 
         def _do() -> httpx.Response:
-            return self._http.request(
-                method, path, params=params, json=json, files=files
-            )
+            return self._http.request(method, path, params=params, json=json, files=files)
 
         response = self._with_retries(_do)
         return self._unwrap(response)
@@ -122,9 +115,7 @@ class UnifiClient:
         try:
             payload = response.json()
         except (ValueError, _json.JSONDecodeError) as e:
-            raise UnifiClientError(
-                f"malformed JSON from {response.url}: {e}"
-            ) from e
+            raise UnifiClientError(f"malformed JSON from {response.url}: {e}") from e
         if not isinstance(payload, dict):
             raise UnifiClientError(
                 f"unexpected envelope shape from {response.url}: "
@@ -136,9 +127,7 @@ class UnifiClient:
             raise UnifiClientError(f"{code}: {msg}")
         return payload.get("data")
 
-    def _with_retries(
-        self, action: Callable[[], httpx.Response]
-    ) -> httpx.Response:
+    def _with_retries(self, action: Callable[[], httpx.Response]) -> httpx.Response:
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             try:
                 response = action()
@@ -153,8 +142,7 @@ class UnifiClient:
             if response.status_code == 429:
                 if attempt == _MAX_ATTEMPTS:
                     raise UnifiClientError(
-                        f"HTTP 429 after {_MAX_ATTEMPTS} attempts: "
-                        f"{response.text[:200]}"
+                        f"HTTP 429 after {_MAX_ATTEMPTS} attempts: {response.text[:200]}"
                     )
                 wait = _parse_retry_after(response) or _backoff_seconds(attempt)
                 time.sleep(wait)
@@ -171,9 +159,7 @@ class UnifiClient:
 
             if response.status_code >= 400:
                 # 4xx other than 429 (including non-standard 402) → permanent.
-                raise UnifiClientError(
-                    f"HTTP {response.status_code}: {response.text[:200]}"
-                )
+                raise UnifiClientError(f"HTTP {response.status_code}: {response.text[:200]}")
 
             return response
 
@@ -202,9 +188,7 @@ class UnifiClient:
             if len(data) < _PAGE_SIZE:
                 self._fetched_users_done = True
                 return results
-        raise UnifiClientError(
-            f"/users pagination exceeded {_MAX_PAGES} pages without terminating"
-        )
+        raise UnifiClientError(f"/users pagination exceeded {_MAX_PAGES} pages without terminating")
 
     def _row_to_unifi_user(self, row: dict[str, Any]) -> UnifiUser | None:
         emp_raw = row.get("employee_number") or ""
@@ -318,9 +302,7 @@ class UnifiClient:
 
             if resolved.card_id != unifi_user.card_id:
                 # Delete old card(s) on the user.
-                for old_card in self._nfc_cards_by_contact.get(
-                    resolved.contact_id, []
-                ):
+                for old_card in self._nfc_cards_by_contact.get(resolved.contact_id, []):
                     old_token = str(old_card.get("token", ""))
                     if not old_token:
                         continue
@@ -430,9 +412,7 @@ class UnifiClient:
         Mirrors what _preimport_unknown_cards does up to the token-map fetch,
         but skips the actual import POST (writes are suppressed in dry-run).
         """
-        any_card = any(
-            r.card_id is not None for r in diff.to_add
-        ) or any(
+        any_card = any(r.card_id is not None for r in diff.to_add) or any(
             r.card_id is not None for r, _ in diff.to_update_credential
         )
         if any_card:
@@ -467,8 +447,7 @@ class UnifiClient:
             )
             if not isinstance(data, list):
                 raise UnifiClientError(
-                    f"expected list of cards from /nfc_cards/tokens, "
-                    f"got {type(data).__name__}"
+                    f"expected list of cards from /nfc_cards/tokens, got {type(data).__name__}"
                 )
             for row in data:
                 nfc_id = str(row.get("nfc_id", ""))
@@ -485,9 +464,7 @@ class UnifiClient:
             if len(data) < _PAGE_SIZE:
                 break
         else:
-            raise UnifiClientError(
-                f"/nfc_cards/tokens pagination exceeded {_MAX_PAGES} pages"
-            )
+            raise UnifiClientError(f"/nfc_cards/tokens pagination exceeded {_MAX_PAGES} pages")
         self._nfc_token_map = token_map
         return token_map
 
@@ -528,15 +505,10 @@ class UnifiClient:
                 # string.
                 try:
                     bad_fc = (int(nfc_id, 16) >> 16) & 0xFF
-                    detail = (
-                        f"got FC {bad_fc}, "
-                        f"expected {self._config.facility_code}"
-                    )
+                    detail = f"got FC {bad_fc}, expected {self._config.facility_code}"
                 except ValueError:
                     detail = "nfc_id is not valid hex"
-                raise UnifiClientError(
-                    f"import response card failed validation: {detail}"
-                )
+                raise UnifiClientError(f"import response card failed validation: {detail}")
             if not token:
                 raise UnifiClientError(
                     f"card import failed for card_id={_redact(parsed_card_id)} (empty token in response)"
@@ -549,7 +521,7 @@ class UnifiClient:
             first, last = _split_name(resolved.display_name)
             if existing_user_id is not None:
                 # Reactivate path: prepare credentials/policy first, then activate.
-                self._reactivate_existing(resolved, existing_user_id, first, last)
+                self._prepare_reactivation(resolved, existing_user_id, first, last)
                 self._bind_card_if_set(existing_user_id, resolved)
                 self._assign_policy_if_set(existing_user_id, resolved)
                 self._activate_user(existing_user_id)
@@ -561,7 +533,7 @@ class UnifiClient:
                 self._bind_card_if_set(user_id, resolved)
                 self._assign_policy_if_set(user_id, resolved)
 
-    def _reactivate_existing(
+    def _prepare_reactivation(
         self,
         resolved: ResolvedMember,
         user_id: str,
@@ -604,9 +576,7 @@ class UnifiClient:
         )
         time.sleep(self._INTER_CALL_DELAY_SECONDS)
 
-    def _create_user(
-        self, resolved: ResolvedMember, first: str, last: str
-    ) -> str:
+    def _create_user(self, resolved: ResolvedMember, first: str, last: str) -> str:
         data = self._request(
             "POST",
             "/api/v1/developer/users",
@@ -618,9 +588,7 @@ class UnifiClient:
         )
         time.sleep(self._INTER_CALL_DELAY_SECONDS)
         if not isinstance(data, dict) or "id" not in data:
-            raise UnifiClientError(
-                f"POST /users returned no id for contact={resolved.contact_id}"
-            )
+            raise UnifiClientError(f"POST /users returned no id for contact={resolved.contact_id}")
         return str(data["id"])
 
     def _bind_card_if_set(self, user_id: str, resolved: ResolvedMember) -> None:
@@ -639,9 +607,7 @@ class UnifiClient:
         )
         time.sleep(self._INTER_CALL_DELAY_SECONDS)
 
-    def _assign_policy_if_set(
-        self, user_id: str, resolved: ResolvedMember
-    ) -> None:
+    def _assign_policy_if_set(self, user_id: str, resolved: ResolvedMember) -> None:
         if resolved.target_policy is None:
             return
         self._request(

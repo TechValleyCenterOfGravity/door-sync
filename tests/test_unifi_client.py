@@ -1168,6 +1168,17 @@ def test_apply_reactivate_inactive_user_path(
     # No DELETE calls.
     delete_calls = [r for r in httpx_mock.get_requests() if r.method == "DELETE"]
     assert delete_calls == []
+
+    # First PUT is profile-only (no status), final PUT is activation-only.
+    user_puts = [
+        r
+        for r in httpx_mock.get_requests()
+        if r.method == "PUT" and r.url.path == "/api/v1/developer/users/uuid-42"
+    ]
+    assert len(user_puts) == 2
+    assert "status" not in _json.loads(user_puts[0].content)
+    assert _json.loads(user_puts[1].content) == {"status": "ACTIVE"}
+
     client.close()
 
 
@@ -1262,6 +1273,17 @@ def test_apply_reactivate_swaps_card_when_changed(
         ("PUT", "/api/v1/developer/users/uuid-42/access_policies"),
         ("PUT", "/api/v1/developer/users/uuid-42"),
     ]
+
+    # First PUT is profile-only (no status), final PUT is activation-only.
+    user_puts = [
+        r
+        for r in httpx_mock.get_requests()
+        if r.method == "PUT" and r.url.path == "/api/v1/developer/users/uuid-42"
+    ]
+    assert len(user_puts) == 2
+    assert "status" not in _json.loads(user_puts[0].content)
+    assert _json.loads(user_puts[1].content) == {"status": "ACTIVE"}
+
     client.close()
 
 
