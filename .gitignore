@@ -11,3 +11,4 @@ build/
 .serena/
 .worktrees/
 docs/_build/
+config.toml
