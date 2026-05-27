@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "name": "docstring",
+  "owner": "pipecat-ai",
+  "repo": "pipecat",
+  "path": ".claude/skills/docstring",
+  "branch": "main",
+  "sha": "51128e6e50a2f717148883cd34eefe38c1268942",
+  "source": "manual"
+}
