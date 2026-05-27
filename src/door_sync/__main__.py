@@ -162,6 +162,10 @@ def cmd_show_diff(args: argparse.Namespace) -> int:
         _logger.exception("show-diff failed")
         return 2
 
+    seen_types: set[str] = set()
+    for m in members:
+        seen_types.update(m.membership_types)
+    cli.print_membership_types(seen_types, config.tier_mapping, file=sys.stdout)
     cli.print_diff(diff, file=sys.stdout)
     return 0
 

@@ -34,11 +34,13 @@ class CivicrmConfig:
         host: Base URL of the WordPress/CiviCRM instance (must be https).
         api_key: Bearer token for CiviCRM API4 authentication.
         card_id_field: CiviCRM custom field name that holds the card ID.
+        active_statuses: Membership status names that grant door access.
     """
 
     host: str
     api_key: str
     card_id_field: str
+    active_statuses: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -374,7 +376,34 @@ def _validate_civicrm(
                 )
             )
             card_id_field = ""
-    return CivicrmConfig(host=host, api_key=api_key, card_id_field=card_id_field)
+    active_statuses_raw = section.get("active_statuses", ["Current", "Grace", "New"])
+    if not isinstance(active_statuses_raw, list) or not all(
+        isinstance(s, str) for s in active_statuses_raw
+    ):
+        issues.append(
+            ConfigIssue(
+                path="civicrm.active_statuses",
+                message="must be a list of strings",
+            )
+        )
+        active_statuses: tuple[str, ...] = ("Current", "Grace", "New")
+    else:
+        stripped = [s.strip() for s in active_statuses_raw]
+        empty = [s for s in stripped if not s]
+        if empty:
+            issues.append(
+                ConfigIssue(
+                    path="civicrm.active_statuses",
+                    message="entries must be non-empty strings",
+                )
+            )
+        active_statuses = tuple(stripped) if not empty else ("Current", "Grace", "New")
+    return CivicrmConfig(
+        host=host,
+        api_key=api_key,
+        card_id_field=card_id_field,
+        active_statuses=active_statuses,
+    )
 
 
 def _validate_unifi(

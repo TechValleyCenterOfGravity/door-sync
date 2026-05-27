@@ -6,7 +6,36 @@ Kept separate from __main__.py so they're unit-testable without subprocess.
 from typing import IO
 
 from door_sync.config import ConfigIssue
-from door_sync.models import Diff, ResolvedMember, UnifiUser
+from door_sync.models import Diff, ResolvedMember, TierMapping, UnifiUser
+
+
+def print_membership_types(
+    seen_types: set[str], tier_mapping: TierMapping, *, file: IO[str]
+) -> None:
+    """Print all membership types with their mapping status.
+
+    Args:
+        seen_types: Membership type labels found in CiviCRM.
+        tier_mapping: Tier mapping configuration with rules.
+        file: Output stream to write to.
+    """
+    mapped = seen_types & tier_mapping.rules.keys()
+    unmapped = seen_types - tier_mapping.rules.keys()
+    unused = tier_mapping.rules.keys() - seen_types
+
+    print(f"=== MEMBERSHIP TYPES ({len(seen_types)} seen) ===", file=file)
+    for t in sorted(mapped):
+        rule = tier_mapping.rules[t]
+        print(f"  [mapped]   {t} -> {rule.resolution} (rank {rule.rank})", file=file)
+    for t in sorted(unmapped):
+        print(f"  [UNMAPPED] {t}", file=file)
+    for t in sorted(unused):
+        rule = tier_mapping.rules[t]
+        print(
+            f"  [unused]   {t} -> {rule.resolution} (rank {rule.rank}, no members)",
+            file=file,
+        )
+    print(file=file)
 
 
 def print_diff(diff: Diff, *, file: IO[str]) -> None:

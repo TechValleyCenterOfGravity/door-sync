@@ -18,7 +18,12 @@ from door_sync.models import SafetyThresholds, TierMapping
 
 
 def test_civicrm_config_is_frozen() -> None:
-    c = CivicrmConfig(host="https://x", api_key="k", card_id_field="G.f")
+    c = CivicrmConfig(
+        host="https://x",
+        api_key="k",
+        card_id_field="G.f",
+        active_statuses=("Current", "Grace", "New"),
+    )
     with pytest.raises(FrozenInstanceError):
         c.host = "https://y"  # type: ignore[misc]
 
@@ -32,7 +37,12 @@ def test_unifi_config_is_frozen() -> None:
 def test_config_is_frozen() -> None:
     c = Config(
         cadence_seconds=600,
-        civicrm=CivicrmConfig(host="https://x", api_key="k", card_id_field="G.f"),
+        civicrm=CivicrmConfig(
+            host="https://x",
+            api_key="k",
+            card_id_field="G.f",
+            active_statuses=("Current", "Grace", "New"),
+        ),
         unifi=UnifiConfig(
             host="https://y", api_key="k", tls_fingerprint="AB" * 32, facility_code=0
         ),

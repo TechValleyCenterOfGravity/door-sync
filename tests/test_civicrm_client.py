@@ -17,6 +17,7 @@ def _config() -> CivicrmConfig:
         host="https://civi.example.org",
         api_key="testkey",
         card_id_field="Door_Access.card_id",
+        active_statuses=("Current", "Grace"),
     )
 
 

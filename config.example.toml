@@ -11,6 +11,9 @@ host = "https://civicrm.example.org"
 # CiviCRM API4 custom field on the Contact entity holding the access card ID.
 # Format: "CustomGroupName.field_name" (e.g. "Door_Access.card_id").
 card_id_field = "Door_Access.card_id"
+# CiviCRM membership status names that grant door access.
+# Default: ["Current", "Grace", "New"]. Omit to use the default.
+active_statuses = ["Current", "Grace", "New"]
 
 [unifi]
 # Base URL for the UniFi Access controller (must start with https://).

@@ -31,7 +31,7 @@ _PAGE_SIZE = 250
 _CONTACT_BATCH_SIZE = (
     500  # Caps contact_ids per Membership.get IN clause to keep request body bounded
 )
-_ACTIVE_STATUSES = ["Current", "Grace"]
+_DEFAULT_ACTIVE_STATUSES = ("Current", "Grace", "New")
 _MAX_PAGES = 1_000  # 250,000 records — far above any plausible deployment
 _MAX_ATTEMPTS = 3
 
@@ -162,7 +162,7 @@ class CivicrmClient:
                     ],
                     "where": [
                         ["contact_id", "IN", batch_ids],
-                        ["status_id:name", "IN", _ACTIVE_STATUSES],
+                        ["status_id:name", "IN", list(self._config.active_statuses)],
                     ],
                     "limit": _PAGE_SIZE,
                     "offset": offset,

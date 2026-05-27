@@ -4,7 +4,7 @@ import io
 
 from door_sync import cli
 from door_sync.config import ConfigIssue
-from door_sync.models import Diff, ResolvedMember, UnifiUser
+from door_sync.models import Diff, ResolvedMember, TierMapping, TierRule, UnifiUser
 
 
 def test_print_diff_renders_five_sections() -> None:
@@ -54,6 +54,41 @@ def test_print_diff_empty_sections_still_print_header() -> None:
     text = out.getvalue()
     assert "=== ADD (0) ===" in text
     assert "=== UNMAPPED (0) ===" in text
+
+
+def test_print_membership_types_shows_mapped_unmapped_unused() -> None:
+    tier_mapping = TierMapping(
+        rules={
+            "Gold": TierRule(resolution="tier", target_policy="p1", rank=100),
+            "Silver": TierRule(resolution="tier", target_policy="p2", rank=50),
+            "Comp": TierRule(resolution="none", target_policy=None, rank=10),
+        }
+    )
+    seen_types = {"Gold", "Bronze", "Silver"}
+    out = io.StringIO()
+
+    cli.print_membership_types(seen_types, tier_mapping, file=out)
+
+    text = out.getvalue()
+    assert "=== MEMBERSHIP TYPES (3 seen) ===" in text
+    assert "[mapped]   Gold -> tier (rank 100)" in text
+    assert "[mapped]   Silver -> tier (rank 50)" in text
+    assert "[UNMAPPED] Bronze" in text
+    assert "[unused]   Comp -> none (rank 10, no members)" in text
+
+
+def test_print_membership_types_all_mapped() -> None:
+    tier_mapping = TierMapping(
+        rules={"Gold": TierRule(resolution="tier", target_policy="p1", rank=100)}
+    )
+    out = io.StringIO()
+
+    cli.print_membership_types({"Gold"}, tier_mapping, file=out)
+
+    text = out.getvalue()
+    assert "[UNMAPPED]" not in text
+    assert "[unused]" not in text
+    assert "[mapped]   Gold" in text
 
 
 def test_print_config_issues_one_line_per_issue() -> None:

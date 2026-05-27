@@ -144,6 +144,7 @@ def _config(tmp_path: Path) -> Config:
             host="https://civicrm.example.org",
             api_key="k",
             card_id_field="Door_Access.card_id",
+            active_statuses=("Current", "Grace"),
         ),
         unifi=UnifiConfig(
             host="https://unifi.example.org:12445",
