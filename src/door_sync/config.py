@@ -28,6 +28,8 @@ EnvGetter = Callable[[str], "str | None"]
 
 @dataclass(frozen=True)
 class CivicrmConfig:
+    """CiviCRM API4 connection settings. Secret: api_key (from env)."""
+
     host: str
     api_key: str
     card_id_field: str
@@ -35,6 +37,8 @@ class CivicrmConfig:
 
 @dataclass(frozen=True)
 class UnifiConfig:
+    """UniFi Access controller connection settings. Secret: api_key (from env)."""
+
     host: str
     api_key: str
     tls_fingerprint: str
@@ -43,6 +47,8 @@ class UnifiConfig:
 
 @dataclass(frozen=True)
 class SmtpConfig:
+    """SMTP alert transport settings. Secrets: username, password (from env)."""
+
     host: str
     port: int
     starttls: bool
@@ -55,6 +61,8 @@ class SmtpConfig:
 
 @dataclass(frozen=True)
 class MailgunConfig:
+    """Mailgun HTTP API alert transport settings. Secret: api_key (from env)."""
+
     domain: str
     api_key: str
     from_addr: str
@@ -64,6 +72,8 @@ class MailgunConfig:
 
 @dataclass(frozen=True)
 class AlertConfig:
+    """Alert transport selector. smtp/mailgun populated only when transport matches."""
+
     transport: Literal["flag-file", "smtp", "mailgun"]
     smtp: SmtpConfig | None
     mailgun: MailgunConfig | None
@@ -74,6 +84,8 @@ _DEFAULT_ALERT_CONFIG = AlertConfig(transport="flag-file", smtp=None, mailgun=No
 
 @dataclass(frozen=True)
 class OpsPaths:
+    """File paths for operational artifacts (audit log, state, alert flag)."""
+
     audit_jsonl: Path
     state_json: Path
     alert_flag: Path
@@ -81,6 +93,8 @@ class OpsPaths:
 
 @dataclass(frozen=True)
 class Config:
+    """Top-level configuration assembled from TOML + env by load()."""
+
     cadence_seconds: int
     civicrm: CivicrmConfig
     unifi: UnifiConfig
@@ -92,6 +106,8 @@ class Config:
 
 @dataclass(frozen=True)
 class ConfigIssue:
+    """Single validation error: dotted path to the offending key + message."""
+
     path: str
     message: str
 
