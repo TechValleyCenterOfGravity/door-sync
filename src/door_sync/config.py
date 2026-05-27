@@ -28,7 +28,13 @@ EnvGetter = Callable[[str], "str | None"]
 
 @dataclass(frozen=True)
 class CivicrmConfig:
-    """CiviCRM API4 connection settings. Secret: api_key (from env)."""
+    """CiviCRM API4 connection settings. Secret: api_key (from env).
+
+    Parameters:
+        host: Base URL of the WordPress/CiviCRM instance (must be https).
+        api_key: Bearer token for CiviCRM API4 authentication.
+        card_id_field: CiviCRM custom field name that holds the card ID.
+    """
 
     host: str
     api_key: str
@@ -37,7 +43,14 @@ class CivicrmConfig:
 
 @dataclass(frozen=True)
 class UnifiConfig:
-    """UniFi Access controller connection settings. Secret: api_key (from env)."""
+    """UniFi Access controller connection settings. Secret: api_key (from env).
+
+    Parameters:
+        host: Base URL of the UniFi Access controller (must be https).
+        api_key: Bearer token for UniFi local API authentication.
+        tls_fingerprint: SHA-256 fingerprint of the controller's TLS certificate.
+        facility_code: Wiegand-26 facility code (0-255) for NFC card encoding.
+    """
 
     host: str
     api_key: str
@@ -47,7 +60,18 @@ class UnifiConfig:
 
 @dataclass(frozen=True)
 class SmtpConfig:
-    """SMTP alert transport settings. Secrets: username, password (from env)."""
+    """SMTP alert transport settings. Secrets: username, password (from env).
+
+    Parameters:
+        host: SMTP server hostname.
+        port: SMTP server port.
+        starttls: Whether to upgrade the connection with STARTTLS.
+        username: SMTP authentication username.
+        password: SMTP authentication password.
+        from_addr: Sender email address.
+        to_addrs: Recipient email addresses.
+        subject_prefix: String prepended to all alert email subjects.
+    """
 
     host: str
     port: int
@@ -61,7 +85,15 @@ class SmtpConfig:
 
 @dataclass(frozen=True)
 class MailgunConfig:
-    """Mailgun HTTP API alert transport settings. Secret: api_key (from env)."""
+    """Mailgun HTTP API alert transport settings. Secret: api_key (from env).
+
+    Parameters:
+        domain: Mailgun sending domain.
+        api_key: Mailgun API key for authentication.
+        from_addr: Sender email address.
+        to_addrs: Recipient email addresses.
+        subject_prefix: String prepended to all alert email subjects.
+    """
 
     domain: str
     api_key: str
@@ -72,7 +104,13 @@ class MailgunConfig:
 
 @dataclass(frozen=True)
 class AlertConfig:
-    """Alert transport selector. smtp/mailgun populated only when transport matches."""
+    """Alert transport selector. smtp/mailgun populated only when transport matches.
+
+    Parameters:
+        transport: Active transport: flag-file, smtp, or mailgun.
+        smtp: SMTP settings when transport is 'smtp', None otherwise.
+        mailgun: Mailgun settings when transport is 'mailgun', None otherwise.
+    """
 
     transport: Literal["flag-file", "smtp", "mailgun"]
     smtp: SmtpConfig | None
@@ -84,7 +122,13 @@ _DEFAULT_ALERT_CONFIG = AlertConfig(transport="flag-file", smtp=None, mailgun=No
 
 @dataclass(frozen=True)
 class OpsPaths:
-    """File paths for operational artifacts (audit log, state, alert flag)."""
+    """File paths for operational artifacts (audit log, state, alert flag).
+
+    Parameters:
+        audit_jsonl: Path to the append-only JSONL audit log.
+        state_json: Path to the persistent state JSON file.
+        alert_flag: Path to the alert flag file.
+    """
 
     audit_jsonl: Path
     state_json: Path
@@ -93,7 +137,17 @@ class OpsPaths:
 
 @dataclass(frozen=True)
 class Config:
-    """Top-level configuration assembled from TOML + env by load()."""
+    """Top-level configuration assembled from TOML + env by `load()`.
+
+    Parameters:
+        cadence_seconds: Seconds between reconciliation cycles in daemon mode.
+        civicrm: CiviCRM API connection settings.
+        unifi: UniFi Access controller connection settings.
+        safety: Thresholds for mass-change safety guards.
+        tier_mapping: Rules mapping membership types to access policies.
+        ops_paths: File paths for audit log, state, and alert flag.
+        alert: Alert transport configuration.
+    """
 
     cadence_seconds: int
     civicrm: CivicrmConfig
@@ -106,7 +160,12 @@ class Config:
 
 @dataclass(frozen=True)
 class ConfigIssue:
-    """Single validation error: dotted path to the offending key + message."""
+    """Single validation error: dotted path to the offending key + message.
+
+    Parameters:
+        path: Dotted config key path (e.g. 'civicrm.host') or env var name.
+        message: Human-readable description of the validation failure.
+    """
 
     path: str
     message: str

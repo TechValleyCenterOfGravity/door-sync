@@ -25,9 +25,14 @@ def handle_crash(
     paths: OpsPaths,
     alert_config: AlertConfig | None = None,
 ) -> None:
-    """Log + audit + alert on a reconcile cycle crash.
+    """Log, audit, and alert on a reconcile cycle crash.
 
     Shared by one-shot (--once) and daemon mode so behavior stays symmetric.
+
+    Args:
+        exc: The exception that caused the crash.
+        paths: Operational file paths (audit log, state, alert flag).
+        alert_config: Email transport settings, or None for flag-file only.
     """
     _logger.error("reconcile crashed", exc_info=exc)
     audit.log_crashed(exc, path=paths.audit_jsonl)
