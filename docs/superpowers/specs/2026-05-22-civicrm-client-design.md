@@ -66,8 +66,8 @@ The constructor signature takes the whole `CivicrmConfig` slice rather than indi
 
 ## 5. HTTP contract
 
-- **URL pattern:** `POST <host>/wp-json/civicrm/v3/api4/<Entity>/<Action>`
-- **Auth:** `Authorization: Bearer <api_key>` header
+- **URL pattern:** `POST <host>/civicrm/ajax/api4/<Entity>/<Action>`
+- **Auth:** `Authorization: Bearer <api_key>` header, `X-Requested-With: XMLHttpRequest`
 - **Body:** `application/x-www-form-urlencoded`, with a single `params` field containing JSON-encoded query parameters (this is the standard CiviCRM API4 over REST convention)
 - **Response:** JSON with a `values` array of result records and an optional `count` total
 - **httpx config:** `base_url=config.host`, `timeout=httpx.Timeout(connect=10.0, read=30.0)`, `verify=True`, no following redirects (CiviCRM REST doesn't redirect)

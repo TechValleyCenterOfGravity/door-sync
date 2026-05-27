@@ -26,7 +26,7 @@ import httpx
 from door_sync.config import CivicrmConfig
 from door_sync.models import CiviMember
 
-_API_PATH = "/wp-json/civicrm/v3/api4"
+_API_PATH = "/civicrm/ajax/api4"
 _PAGE_SIZE = 250
 _CONTACT_BATCH_SIZE = (
     500  # Caps contact_ids per Membership.get IN clause to keep request body bounded
@@ -58,7 +58,10 @@ class CivicrmClient:
             base_url=config.host,
             timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0),
             verify=True,
-            headers={"Authorization": f"Bearer {config.api_key}"},
+            headers={
+                "Authorization": f"Bearer {config.api_key}",
+                "X-Requested-With": "XMLHttpRequest",
+            },
         )
 
     def fetch_active(self) -> list[CiviMember]:

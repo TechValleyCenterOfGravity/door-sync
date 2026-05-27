@@ -54,7 +54,7 @@ def _register_contacts(
 ) -> None:
     httpx_mock.add_response(
         method="POST",
-        url="https://civi.example.org/wp-json/civicrm/v3/api4/Contact/get",
+        url="https://civi.example.org/civicrm/ajax/api4/Contact/get",
         json=_values_response(values),
     )
 
@@ -65,7 +65,7 @@ def _register_memberships(
 ) -> None:
     httpx_mock.add_response(
         method="POST",
-        url="https://civi.example.org/wp-json/civicrm/v3/api4/Membership/get",
+        url="https://civi.example.org/civicrm/ajax/api4/Membership/get",
         json=_values_response(values),
     )
 
@@ -181,6 +181,7 @@ def test_request_uses_bearer_auth_and_form_body(httpx_mock: HTTPXMock) -> None:
     assert len(requests) == 1
     req = requests[0]
     assert req.headers["authorization"] == "Bearer testkey"
+    assert req.headers["x-requested-with"] == "XMLHttpRequest"
     assert req.headers["content-type"].startswith("application/x-www-form-urlencoded")
     # Body is form-encoded `params=<json>`. Decode and verify the JSON shape.
     body = req.content.decode()
@@ -200,23 +201,23 @@ def test_fetch_active_paginates_contacts(httpx_mock: HTTPXMock) -> None:
 
     httpx_mock.add_response(
         method="POST",
-        url="https://civi.example.org/wp-json/civicrm/v3/api4/Contact/get",
+        url="https://civi.example.org/civicrm/ajax/api4/Contact/get",
         json=_values_response(full_page),
     )
     httpx_mock.add_response(
         method="POST",
-        url="https://civi.example.org/wp-json/civicrm/v3/api4/Contact/get",
+        url="https://civi.example.org/civicrm/ajax/api4/Contact/get",
         json=_values_response(short_page),
     )
     # All 251 contacts have Gold/Current memberships, returned across two pages
     httpx_mock.add_response(
         method="POST",
-        url="https://civi.example.org/wp-json/civicrm/v3/api4/Membership/get",
+        url="https://civi.example.org/civicrm/ajax/api4/Membership/get",
         json=_values_response([_membership(i, "Gold", "Current") for i in range(1, 251)]),
     )
     httpx_mock.add_response(
         method="POST",
-        url="https://civi.example.org/wp-json/civicrm/v3/api4/Membership/get",
+        url="https://civi.example.org/civicrm/ajax/api4/Membership/get",
         json=_values_response([_membership(251, "Gold", "Current")]),
     )
 
@@ -244,12 +245,12 @@ def test_fetch_active_paginates_memberships(httpx_mock: HTTPXMock) -> None:
     short_page = [_membership(1, "Type250", "Current")]
     httpx_mock.add_response(
         method="POST",
-        url="https://civi.example.org/wp-json/civicrm/v3/api4/Membership/get",
+        url="https://civi.example.org/civicrm/ajax/api4/Membership/get",
         json=_values_response(full_page),
     )
     httpx_mock.add_response(
         method="POST",
-        url="https://civi.example.org/wp-json/civicrm/v3/api4/Membership/get",
+        url="https://civi.example.org/civicrm/ajax/api4/Membership/get",
         json=_values_response(short_page),
     )
 
@@ -270,17 +271,17 @@ def test_fetch_active_batches_membership_contact_ids(
     # 501 contacts → 3 Contact.get pages (250 + 250 + 1), then 2 Membership.get batches (500 + 1)
     httpx_mock.add_response(
         method="POST",
-        url="https://civi.example.org/wp-json/civicrm/v3/api4/Contact/get",
+        url="https://civi.example.org/civicrm/ajax/api4/Contact/get",
         json=_values_response([_contact(i) for i in range(1, 251)]),
     )
     httpx_mock.add_response(
         method="POST",
-        url="https://civi.example.org/wp-json/civicrm/v3/api4/Contact/get",
+        url="https://civi.example.org/civicrm/ajax/api4/Contact/get",
         json=_values_response([_contact(i) for i in range(251, 501)]),
     )
     httpx_mock.add_response(
         method="POST",
-        url="https://civi.example.org/wp-json/civicrm/v3/api4/Contact/get",
+        url="https://civi.example.org/civicrm/ajax/api4/Contact/get",
         json=_values_response([_contact(501)]),
     )
 
@@ -333,7 +334,7 @@ def test_http_401_raises_no_retry(httpx_mock: HTTPXMock) -> None:
     """401 is a permanent auth error — no retry, raise CivicrmClientError."""
     httpx_mock.add_response(
         method="POST",
-        url="https://civi.example.org/wp-json/civicrm/v3/api4/Contact/get",
+        url="https://civi.example.org/civicrm/ajax/api4/Contact/get",
         status_code=401,
         text="Unauthorized",
     )
@@ -355,7 +356,7 @@ def test_http_500_retries_then_raises(
     for _ in range(3):
         httpx_mock.add_response(
             method="POST",
-            url="https://civi.example.org/wp-json/civicrm/v3/api4/Contact/get",
+            url="https://civi.example.org/civicrm/ajax/api4/Contact/get",
             status_code=500,
             text="Internal Server Error",
         )
@@ -375,7 +376,7 @@ def test_http_500_then_200_succeeds(httpx_mock: HTTPXMock, monkeypatch: pytest.M
 
     httpx_mock.add_response(
         method="POST",
-        url="https://civi.example.org/wp-json/civicrm/v3/api4/Contact/get",
+        url="https://civi.example.org/civicrm/ajax/api4/Contact/get",
         status_code=500,
     )
     _register_contacts(httpx_mock, [_contact(42)])
@@ -397,7 +398,7 @@ def test_http_429_honors_retry_after_seconds(
 
     httpx_mock.add_response(
         method="POST",
-        url="https://civi.example.org/wp-json/civicrm/v3/api4/Contact/get",
+        url="https://civi.example.org/civicrm/ajax/api4/Contact/get",
         status_code=429,
         headers={"Retry-After": "5"},
     )
@@ -415,7 +416,7 @@ def test_malformed_json_raises(httpx_mock: HTTPXMock) -> None:
     """200 with invalid JSON body → CivicrmClientError."""
     httpx_mock.add_response(
         method="POST",
-        url="https://civi.example.org/wp-json/civicrm/v3/api4/Contact/get",
+        url="https://civi.example.org/civicrm/ajax/api4/Contact/get",
         status_code=200,
         text="not valid json {",
     )
@@ -471,7 +472,7 @@ def test_negative_retry_after_falls_back_to_backoff(
 
     httpx_mock.add_response(
         method="POST",
-        url="https://civi.example.org/wp-json/civicrm/v3/api4/Contact/get",
+        url="https://civi.example.org/civicrm/ajax/api4/Contact/get",
         status_code=429,
         headers={"Retry-After": "-1"},
     )
@@ -495,7 +496,7 @@ def test_non_dict_json_response_returns_empty(httpx_mock: HTTPXMock) -> None:
     """
     httpx_mock.add_response(
         method="POST",
-        url="https://civi.example.org/wp-json/civicrm/v3/api4/Contact/get",
+        url="https://civi.example.org/civicrm/ajax/api4/Contact/get",
         json=["unexpected error"],
     )
 
