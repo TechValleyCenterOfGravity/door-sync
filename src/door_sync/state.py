@@ -19,6 +19,14 @@ from door_sync.models import State
 
 
 def read(path: Path) -> State:
+    """Read persisted state from a JSON file.
+
+    Args:
+        path: Path to the state JSON file.
+
+    Returns:
+        Deserialized `State`, or a zero-valued default if the file does not exist.
+    """
     if not path.exists():
         return State(None, None, None, 0)
     with path.open("r", encoding="utf-8") as fh:
@@ -32,6 +40,12 @@ def read(path: Path) -> State:
 
 
 def write_success(path: Path, *, now: datetime | None = None) -> None:
+    """Record a successful reconciliation cycle in the state file.
+
+    Args:
+        path: Path to the state JSON file.
+        now: Override for the current timestamp (for testing).
+    """
     current = read(path)
     when = now if now is not None else datetime.now(UTC)
     new = State(
@@ -44,6 +58,13 @@ def write_success(path: Path, *, now: datetime | None = None) -> None:
 
 
 def write_halt(path: Path, reason: str, *, now: datetime | None = None) -> None:
+    """Record a halted reconciliation cycle in the state file.
+
+    Args:
+        path: Path to the state JSON file.
+        reason: Human-readable halt reason.
+        now: Override for the current timestamp (for testing).
+    """
     current = read(path)
     when = now if now is not None else datetime.now(UTC)
     new = State(

@@ -21,6 +21,14 @@ def log_applied(
     path: Path,
     facility_code: int,
 ) -> None:
+    """Append an 'applied' audit record for a successfully applied diff.
+
+    Args:
+        diff: The computed diff that was applied.
+        dry_run: Whether this was a dry-run cycle.
+        path: Path to the JSONL audit log file.
+        facility_code: Wiegand-26 facility code for card ID redaction.
+    """
     record: dict[str, Any] = {
         "ts": _now_iso(),
         "event": "applied",
@@ -39,6 +47,15 @@ def log_halt(
     path: Path,
     facility_code: int,
 ) -> None:
+    """Append a 'halted' audit record when a safety guard fires.
+
+    Args:
+        reason: Human-readable description of why the cycle was halted.
+        diff: The computed diff that triggered the halt.
+        dry_run: Whether this was a dry-run cycle.
+        path: Path to the JSONL audit log file.
+        facility_code: Wiegand-26 facility code for card ID redaction.
+    """
     record: dict[str, Any] = {
         "ts": _now_iso(),
         "event": "halted",
@@ -51,6 +68,12 @@ def log_halt(
 
 
 def log_crashed(exc: BaseException, *, path: Path) -> None:
+    """Append a 'crashed' audit record for an unhandled exception.
+
+    Args:
+        exc: The exception that caused the crash.
+        path: Path to the JSONL audit log file.
+    """
     record: dict[str, Any] = {
         "ts": _now_iso(),
         "event": "crashed",
@@ -83,9 +106,7 @@ def _card_last4(diff: Diff, facility_code: int) -> dict[str, list[str]]:
     # card_last4 focused on cards that were actually written or revoked.
     return {
         "added": [
-            _last4_nfc(m.card_id, facility_code)
-            for m in diff.to_add
-            if m.card_id is not None
+            _last4_nfc(m.card_id, facility_code) for m in diff.to_add if m.card_id is not None
         ],
         "updated_credential": [
             _last4_nfc(m.card_id, facility_code)

@@ -47,6 +47,12 @@ class UnifiClient:
     """
 
     def __init__(self, config: UnifiConfig, *, dry_run: bool = False) -> None:
+        """Initialize the UniFi Access client.
+
+        Args:
+            config: UniFi connection settings including host, API key, TLS fingerprint, and facility code.
+            dry_run: If True, write operations log intended actions instead of executing them.
+        """
         self._config = config
         self._dry_run = dry_run
         # Resolve hostname+port once so TLS verification and httpx requests
@@ -72,9 +78,9 @@ class UnifiClient:
     def _verify_tls_fingerprint(self) -> None:
         """
         Validate the UniFi host's TLS certificate by performing a TLS handshake and comparing the certificate's SHA-256 fingerprint to the configured fingerprint.
-        
+
         Performs a TLS handshake (negotiating at least TLS 1.2) against the configured host and port, extracts the peer certificate in DER form, computes its SHA-256 fingerprint (hex, lowercase, without colons), and compares it to the normalized configured fingerprint. If no peer certificate is returned or the fingerprints do not match, raises UnifiClientError.
-         
+
         Raises:
             UnifiClientError: If the TLS handshake yields no peer certificate or the computed fingerprint does not match the configured fingerprint.
         """
@@ -110,16 +116,16 @@ class UnifiClient:
     ) -> Any:
         """
         Perform an HTTP request against the UniFi server and return the API envelope's `data` value.
-        
+
         This forwards `method`, `path` (relative to the client's base URL), and optional `params`, `json`, and `files` to the underlying HTTP client, performs the request with the client's retry logic, and validates/unpacks the UniFi response envelope.
-        
+
         Parameters:
             method (str): HTTP method (e.g., "GET", "POST", "PUT", "DELETE").
             path (str): Request path relative to the client's base URL (may include leading slash).
             params (dict[str, Any] | None): Query parameters to include in the request.
             json (Any): JSON-serializable body to send.
             files (dict[str, Any] | None): Files/multipart payload to send.
-        
+
         Returns:
             Any: The `data` field extracted from the UniFi API response envelope on success.
         """
@@ -127,7 +133,7 @@ class UnifiClient:
         def _do() -> httpx.Response:
             """
             Perform the configured HTTP request using the client's HTTPX session.
-            
+
             Returns:
                 httpx.Response: The HTTPX response returned by the request.
             """
@@ -139,13 +145,13 @@ class UnifiClient:
     def _unwrap(self, response: httpx.Response) -> Any:
         """
         Validate a UniFi API response envelope and return its `data` field.
-        
+
         Parameters:
             response (httpx.Response): The HTTP response returned by the UniFi API.
-        
+
         Returns:
             Any: The value of the envelope's `data` field, or `None` if the field is missing.
-        
+
         Raises:
             UnifiClientError: If the response body is not valid JSON, if the JSON is not an object,
                 or if the envelope `code` is not `"SUCCESS"` (the exception message includes the
@@ -169,13 +175,13 @@ class UnifiClient:
     def _with_retries(self, action: Callable[[], httpx.Response]) -> httpx.Response:
         """
         Perform the provided HTTP action with retry, backoff, and rate-limit handling.
-        
+
         Parameters:
             action (Callable[[], httpx.Response]): Zero-argument callable that executes an HTTP request and returns an `httpx.Response`.
-        
+
         Returns:
             httpx.Response: The successful response returned by `action` (status code less than 400).
-        
+
         Raises:
             UnifiClientError: On non-retryable HTTP errors (4xx other than 429), when retries are exhausted for network failures,
             rate-limited responses (429), or server errors (5xx), or if the retry loop exits unexpectedly.
@@ -220,12 +226,12 @@ class UnifiClient:
     def fetch_users(self) -> list[UnifiUser]:
         """
         Fetch all UniFi users from the developer API, parse them into UnifiUser objects, and return the aggregated list.
-        
+
         Pages through the /api/v1/developer/users endpoint until a page smaller than the page size is returned. Populates the client's fetched-user caches via _row_to_unifi_user and sets _fetched_users_done to True when pagination completes.
-        
+
         Returns:
             list[UnifiUser]: Parsed users collected from all returned pages; rows that cannot be parsed are omitted.
-        
+
         Raises:
             UnifiClientError: If the API returns a non-list payload for a page or if pagination exceeds the maximum allowed pages.
         """
@@ -256,9 +262,9 @@ class UnifiClient:
     def _row_to_unifi_user(self, row: dict[str, Any]) -> UnifiUser | None:
         """
         Convert a UniFi API user row into a UnifiUser, or return None if the row should be ignored.
-        
+
         Parses `employee_number` as the managed contact ID and skips rows when the value is missing, non-integer, less than or equal to zero, or when the UniFi row lacks an `id`. When a valid user is produced, caches are updated: `_unifi_user_id_by_contact[contact_id]` is set to the UniFi `id` and `_nfc_cards_by_contact[contact_id]` is set to the row's `nfc_cards` list (empty if missing or malformed). If multiple NFC cards or access policies are present, a warning is logged and the first entry is used. NFC card identifiers are parsed with the configured facility code; a card whose facility code does not match is treated as no card and a warning is logged.
-        
+
         Returns:
             UnifiUser or `None`: A UnifiUser representing the row when it maps to a managed contact, or `None` if the row should be ignored.
         """
@@ -352,9 +358,9 @@ class UnifiClient:
     def _apply_update_credential(self, diff: Diff) -> None:
         """
         Apply credential-related changes from a Diff to UniFi users.
-        
+
         For each member in the diff's credential-update set, update the user's display name and/or NFC card binding in UniFi. If the contact has no cached UniFi user id the entry is skipped. When replacing a card, any existing NFC card tokens cached for the contact are deleted before binding the new card. Raises UnifiClientError if a required NFC token is unavailable after imports.
-        
+
         Parameters:
             diff (Diff): The diff containing credential updates to apply.
         """
@@ -488,7 +494,7 @@ class UnifiClient:
     def _populate_token_map_for_dry_run(self, diff: Diff) -> None:
         """
         Ensure the NFC token map is populated when the diff contains any card assignments.
-        
+
         If any entry in `diff.to_add` or `diff.to_update_credential` has a non-None `card_id`, load the cached card-id→token map via `_ensure_nfc_token_map()` so dry-run reports can reference existing tokens.
         """
         any_card = any(r.card_id is not None for r in diff.to_add) or any(
@@ -517,12 +523,12 @@ class UnifiClient:
     def _ensure_nfc_token_map(self) -> dict[int, str]:
         """
         Load and cache a mapping of NFC card IDs to their tokens from the UniFi local API.
-        
+
         Pages through the /api/v1/developer/credentials/nfc_cards/tokens endpoint, parses each row's `nfc_id` using the client's configured facility code, and builds a dict mapping the parsed numeric card ID to its token. The result is cached on the instance and returned on subsequent calls.
-        
+
         Returns:
             token_map (dict[int, str]): Mapping from NFC card numeric ID to token.
-        
+
         Raises:
             UnifiClientError: If the API returns an unexpected payload shape or pagination exceeds the configured maximum pages.
         """
@@ -561,9 +567,9 @@ class UnifiClient:
     def _import_cards(self, card_ids: list[int]) -> None:
         """
         Import NFC cards by uploading a two-column CSV and update the client's NFC token map.
-        
+
         If `card_ids` is empty this is a no-op. The method uploads a headerless CSV of `<nfc_id>,<alias>` rows to the UniFi import endpoint, validates the response, and updates the cached token map for each imported card.
-        
+
         Raises:
             UnifiClientError: if the import response is not a list, if an imported row's `nfc_id` cannot be parsed for the configured facility code, or if an imported row contains an empty `token`.
         """
@@ -610,14 +616,14 @@ class UnifiClient:
     def _apply_add(self, diff: Diff) -> None:
         """
         Apply additions from a Diff by creating new UniFi users or reactivating existing ones, and then bind NFC credentials and assign access policies as specified.
-        
+
         For each resolved member in diff.to_add:
         - If a UniFi user already exists for the contact, prepare reactivation, bind the configured NFC card (if any), assign the configured access policy (if any), and activate the user.
         - If no existing UniFi user exists, create a new user, update the internal contact->user_id cache, then bind the card and assign the policy as applicable.
-        
+
         Parameters:
             diff (Diff): A Diff containing members to add; entries are read from `diff.to_add`.
-        
+
         Side effects:
             Performs network calls to the UniFi local API to create/update users, bind/delete NFC cards, and assign access policies, and updates the client's internal caches.
         """
@@ -647,7 +653,7 @@ class UnifiClient:
     ) -> None:
         """
         Update an existing UniFi user record with the provided name and employee_number, then remove any cached NFC cards for that contact whose tokens differ from the newly bound card.
-        
+
         Parameters:
             resolved (ResolvedMember): Resolved member data; `contact_id` is written into `employee_number` and `card_id` is used to determine the new card token to keep.
             user_id (str): UniFi user identifier to update.
@@ -685,7 +691,7 @@ class UnifiClient:
     def _activate_user(self, user_id: str) -> None:
         """
         Activate a UniFi user account by setting its status to "ACTIVE".
-        
+
         Parameters:
             user_id (str): UniFi user resource identifier (the user's `id` as returned by the UniFi API).
         """
@@ -699,15 +705,15 @@ class UnifiClient:
     def _create_user(self, resolved: ResolvedMember, first: str, last: str) -> str:
         """
         Create a UniFi user for the given resolved member and return the new UniFi user id.
-        
+
         Parameters:
             resolved (ResolvedMember): Member data containing the contact_id to set as employee_number.
             first (str): First name to assign to the UniFi user.
             last (str): Last name to assign to the UniFi user.
-        
+
         Returns:
             str: The newly created UniFi user id.
-        
+
         Raises:
             UnifiClientError: If the UniFi API response does not contain an `id` for the created user.
         """
@@ -728,11 +734,11 @@ class UnifiClient:
     def _bind_card_if_set(self, user_id: str, resolved: ResolvedMember) -> None:
         """
         Bind the resolved NFC card to the given UniFi user when a card is specified.
-        
+
         Parameters:
             user_id (str): UniFi user identifier to which the card should be bound.
             resolved (ResolvedMember): Resolved member object containing `card_id` and `contact_id`.
-        
+
         Raises:
             UnifiClientError: If `resolved.card_id` is set but no token is available for that card after import.
         """
@@ -754,7 +760,7 @@ class UnifiClient:
     def _assign_policy_if_set(self, user_id: str, resolved: ResolvedMember) -> None:
         """
         Assigns the resolved access policy to the specified UniFi user if a target policy is set.
-        
+
         Parameters:
             user_id (str): UniFi user identifier to update.
             resolved (ResolvedMember): Member record whose `target_policy`, if not `None`, will be applied to the user.
@@ -769,7 +775,7 @@ class UnifiClient:
         time.sleep(self._INTER_CALL_DELAY_SECONDS)
 
     def close(self) -> None:
-        # httpx.Client may not exist if __init__ failed before constructing it.
+        """Close the underlying HTTP client, if it was successfully created."""
         http = getattr(self, "_http", None)
         if http is not None:
             http.close()

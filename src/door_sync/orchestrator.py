@@ -42,6 +42,15 @@ def handle_crash(
 
 
 def reconcile(config: Config, *, dry_run: bool) -> ReconcileResult:
+    """Execute one reconciliation cycle: fetch, diff, check, apply.
+
+    Args:
+        config: Full application configuration.
+        dry_run: If True, compute and audit the diff but skip UniFi writes.
+
+    Returns:
+        `ReconcileResult` indicating whether the cycle was halted or applied.
+    """
     paths = config.ops_paths
 
     with (

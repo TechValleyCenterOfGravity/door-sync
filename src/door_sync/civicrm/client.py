@@ -48,6 +48,11 @@ class CivicrmClient:
     """
 
     def __init__(self, config: CivicrmConfig) -> None:
+        """Initialize the CiviCRM API4 client.
+
+        Args:
+            config: CiviCRM connection settings including host, API key, and card ID field.
+        """
         self._config = config
         self._http = httpx.Client(
             base_url=config.host,
@@ -57,6 +62,15 @@ class CivicrmClient:
         )
 
     def fetch_active(self) -> list[CiviMember]:
+        """Fetch all contacts with a card ID and their active membership types.
+
+        Returns:
+            List of `CiviMember` records. Contacts with no active membership
+            are included with an empty `membership_types` tuple.
+
+        Raises:
+            CivicrmClientError: On API failure, malformed response, or unparseable card ID.
+        """
         contacts = self._fetch_contacts()
         if not contacts:
             return []
@@ -215,6 +229,7 @@ class CivicrmClient:
         raise CivicrmClientError("retry loop exited unexpectedly")
 
     def close(self) -> None:
+        """Close the underlying HTTP client."""
         self._http.close()
 
     def __enter__(self) -> "CivicrmClient":

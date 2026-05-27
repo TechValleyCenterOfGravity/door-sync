@@ -1,7 +1,22 @@
+"""Pure diff computation between resolved CiviCRM members and UniFi users.
+
+No I/O, no logging, no exceptions on data issues. Takes dataclasses,
+returns a Diff dataclass.
+"""
+
 from door_sync.models import Diff, ResolvedMember, UnifiUser
 
 
 def compute_diff(resolved: list[ResolvedMember], unifi: list[UnifiUser]) -> Diff:
+    """Compute the set of changes needed to reconcile UniFi with CiviCRM.
+
+    Args:
+        resolved: Tier-mapped CiviCRM members (source of truth).
+        unifi: Current UniFi Access users.
+
+    Returns:
+        A `Diff` describing additions, updates, deactivations, and unmapped members.
+    """
     resolved_by_id: dict[int, ResolvedMember] = {r.contact_id: r for r in resolved}
     unifi_by_id: dict[int, UnifiUser] = {u.contact_id: u for u in unifi}
 

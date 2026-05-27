@@ -1,3 +1,9 @@
+"""Pure safety-guard evaluation for door-sync diffs.
+
+Checks for unmapped types, duplicate/invalid card IDs, and mass-change
+thresholds. Returns a CheckResult; never raises on data issues.
+"""
+
 from door_sync.models import CheckResult, Diff, SafetyThresholds
 
 
@@ -7,6 +13,16 @@ def check(
     baseline: int,
     thresholds: SafetyThresholds,
 ) -> CheckResult:
+    """Evaluate safety guards against a computed diff.
+
+    Args:
+        diff: The reconciliation diff to validate.
+        baseline: Number of currently active UniFi users.
+        thresholds: Configured safety thresholds for mass-change detection.
+
+    Returns:
+        `CheckResult` with `halted=True` and a reason if any guard fires.
+    """
     # Guard 1: unmapped types
     if diff.unmapped:
         return CheckResult(

@@ -1,7 +1,22 @@
+"""Pure tier-mapping resolution for CiviCRM members.
+
+Maps each member's active membership types to a target access policy
+using ranked rules from configuration. No I/O, no logging.
+"""
+
 from door_sync.models import CiviMember, ResolvedMember, TierMapping, TierRule
 
 
 def resolve(member: CiviMember, mapping: TierMapping) -> ResolvedMember:
+    """Resolve a single member's membership types to a target policy.
+
+    Args:
+        member: CiviCRM member with active membership types.
+        mapping: Tier-mapping rules from configuration.
+
+    Returns:
+        A `ResolvedMember` with the resolution outcome and target policy.
+    """
     if not member.membership_types:
         return ResolvedMember(
             contact_id=member.contact_id,
@@ -36,7 +51,14 @@ def resolve(member: CiviMember, mapping: TierMapping) -> ResolvedMember:
     )
 
 
-def resolve_all(
-    members: list[CiviMember], mapping: TierMapping
-) -> list[ResolvedMember]:
+def resolve_all(members: list[CiviMember], mapping: TierMapping) -> list[ResolvedMember]:
+    """Resolve all members in a batch.
+
+    Args:
+        members: CiviCRM members to resolve.
+        mapping: Tier-mapping rules from configuration.
+
+    Returns:
+        List of resolved members in the same order as input.
+    """
     return [resolve(m, mapping) for m in members]

@@ -31,6 +31,14 @@ _logger = logging.getLogger("door_sync")
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Parse CLI arguments and dispatch to the appropriate subcommand.
+
+    Args:
+        argv: Command-line arguments. Defaults to sys.argv when None.
+
+    Returns:
+        Exit code: 0 success, 1 halt/config error, 2 crash, 64 usage error.
+    """
     parser = _build_parser()
     args = parser.parse_args(argv)
     _setup_logging(verbose=args.verbose)
@@ -100,6 +108,14 @@ def _setup_logging(*, verbose: bool) -> None:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
+    """Execute one or more reconciliation cycles.
+
+    Args:
+        args: Parsed CLI namespace with `once` and `dry_run` flags.
+
+    Returns:
+        Exit code: 0 success, 1 halted by safety guards, 2 crash.
+    """
     try:
         config = config_mod.load(config_path=args.config, env_path=args.env_file)
     except config_mod.ConfigError as e:
@@ -119,6 +135,14 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_show_diff(args: argparse.Namespace) -> int:
+    """Fetch CiviCRM and UniFi state, compute the diff, and print it.
+
+    Args:
+        args: Parsed CLI namespace with config/env path overrides.
+
+    Returns:
+        Exit code: 0 success, 1 config error, 2 fetch failure.
+    """
     try:
         config = config_mod.load(config_path=args.config, env_path=args.env_file)
     except config_mod.ConfigError as e:
@@ -143,6 +167,14 @@ def cmd_show_diff(args: argparse.Namespace) -> int:
 
 
 def cmd_validate_config(args: argparse.Namespace) -> int:
+    """Load configuration and report any validation issues.
+
+    Args:
+        args: Parsed CLI namespace with config/env path overrides.
+
+    Returns:
+        Exit code: 0 valid, 1 invalid.
+    """
     try:
         config_mod.load(config_path=args.config, env_path=args.env_file)
     except config_mod.ConfigError as e:

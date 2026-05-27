@@ -116,6 +116,11 @@ class ConfigError(Exception):
     """Raised when configuration loading or validation produces one or more issues."""
 
     def __init__(self, issues: list[ConfigIssue]) -> None:
+        """Initialize with one or more validation issues.
+
+        Args:
+            issues: List of config validation errors.
+        """
         self.issues = list(issues)
         super().__init__(self._format())
 
@@ -172,7 +177,20 @@ def load(
     config_path: Path | None = None,
     env_path: Path | None = None,
 ) -> Config:
-    """Load and validate config from TOML + env. See module docstring for details."""
+    """Load and validate configuration from TOML and env files.
+
+    Args:
+        config_path: Path to config.toml. Defaults to
+            $DOOR_SYNC_CONFIG_DIR/config.toml or ./config.toml.
+        env_path: Path to env file. Defaults to
+            $DOOR_SYNC_CONFIG_DIR/env or ./.env.
+
+    Returns:
+        Fully validated `Config` instance.
+
+    Raises:
+        ConfigError: If the config file is missing, malformed, or contains invalid values.
+    """
     config_path, env_path = _resolve_paths(config_path, env_path)
     issues: list[ConfigIssue] = []
 

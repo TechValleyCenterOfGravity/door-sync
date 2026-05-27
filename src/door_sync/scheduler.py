@@ -24,6 +24,8 @@ _logger = logging.getLogger("door_sync.scheduler")
 
 
 class ReconcileFn(Protocol):
+    """Callable protocol for a single reconcile cycle."""
+
     def __call__(self, config: Config, *, dry_run: bool) -> ReconcileResult:
         """Run one reconcile cycle. Production impl: orchestrator.reconcile."""
 
@@ -47,7 +49,19 @@ def run_forever(
     shutdown_event: threading.Event | None = None,
     reconcile_fn: ReconcileFn = orchestrator.reconcile,
 ) -> int:
-    """Run reconcile_fn in a loop until shutdown_event is set. Returns 0."""
+    """Run reconcile cycles in a loop until a shutdown signal is received.
+
+    Args:
+        config: Full application configuration (includes cadence_seconds).
+        dry_run: If True, all cycles run in dry-run mode.
+        shutdown_event: Threading event to signal shutdown. When None,
+            SIGTERM/SIGINT handlers are installed automatically.
+        reconcile_fn: Callable to execute each cycle. Defaults to
+            `orchestrator.reconcile`.
+
+    Returns:
+        Always returns 0 (clean shutdown).
+    """
     if shutdown_event is None:
         shutdown_event = threading.Event()
         _install_signal_handlers(shutdown_event)

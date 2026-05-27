@@ -10,6 +10,12 @@ from door_sync.models import Diff, ResolvedMember, UnifiUser
 
 
 def print_diff(diff: Diff, *, file: IO[str]) -> None:
+    """Print a human-readable summary of a computed diff.
+
+    Args:
+        diff: The reconciliation diff to display.
+        file: Output stream to write to.
+    """
     print(f"=== ADD ({len(diff.to_add)}) ===", file=file)
     for m in diff.to_add:
         print(_format_member(m), file=file)
@@ -32,6 +38,12 @@ def print_diff(diff: Diff, *, file: IO[str]) -> None:
 
 
 def print_config_issues(issues: list[ConfigIssue], *, file: IO[str]) -> None:
+    """Print configuration validation issues, one per line.
+
+    Args:
+        issues: List of config validation errors.
+        file: Output stream to write to.
+    """
     for issue in issues:
         print(f"{issue.path}: {issue.message}", file=file)
 
