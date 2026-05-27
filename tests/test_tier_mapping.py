@@ -43,10 +43,10 @@ def test_unmapped_when_type_missing() -> None:
     assert result.target_policy is None
 
 
-def test_unmapped_when_membership_types_empty() -> None:
+def test_no_active_memberships_resolves_to_none() -> None:
     mapping = TierMapping(rules={})
     result = resolve(_civi(()), mapping)
-    assert result.resolution == "unmapped"
+    assert result.resolution == "none"
     assert result.target_policy is None
 
 

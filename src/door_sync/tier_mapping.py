@@ -23,7 +23,7 @@ def resolve(member: CiviMember, mapping: TierMapping) -> ResolvedMember:
             display_name=member.display_name,
             card_id=member.card_id,
             target_policy=None,
-            resolution="unmapped",
+            resolution="none",
         )
 
     matched: list[tuple[str, TierRule]] = []
