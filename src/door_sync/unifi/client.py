@@ -548,16 +548,18 @@ class UnifiClient:
             existing_user_id = self._unifi_user_id_by_contact.get(resolved.contact_id)
             first, last = _split_name(resolved.display_name)
             if existing_user_id is not None:
-                # Reactivate path
+                # Reactivate path: prepare credentials/policy first, then activate.
                 self._reactivate_existing(resolved, existing_user_id, first, last)
+                self._bind_card_if_set(existing_user_id, resolved)
+                self._assign_policy_if_set(existing_user_id, resolved)
+                self._activate_user(existing_user_id)
             else:
                 # True create
                 user_id = self._create_user(resolved, first, last)
                 self._unifi_user_id_by_contact[resolved.contact_id] = user_id
-            # Common tail: bind card + assign policy.
-            current_user_id = self._unifi_user_id_by_contact[resolved.contact_id]
-            self._bind_card_if_set(current_user_id, resolved)
-            self._assign_policy_if_set(current_user_id, resolved)
+                # Common tail for newly created users.
+                self._bind_card_if_set(user_id, resolved)
+                self._assign_policy_if_set(user_id, resolved)
 
     def _reactivate_existing(
         self,
@@ -573,7 +575,6 @@ class UnifiClient:
                 "first_name": first,
                 "last_name": last,
                 "employee_number": str(resolved.contact_id),
-                "status": "ACTIVE",
             },
         )
         time.sleep(self._INTER_CALL_DELAY_SECONDS)
@@ -594,6 +595,14 @@ class UnifiClient:
                 json={"token": old_token},
             )
             time.sleep(self._INTER_CALL_DELAY_SECONDS)
+
+    def _activate_user(self, user_id: str) -> None:
+        self._request(
+            "PUT",
+            f"/api/v1/developer/users/{user_id}",
+            json={"status": "ACTIVE"},
+        )
+        time.sleep(self._INTER_CALL_DELAY_SECONDS)
 
     def _create_user(
         self, resolved: ResolvedMember, first: str, last: str

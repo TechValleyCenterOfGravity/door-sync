@@ -1106,7 +1106,7 @@ def test_apply_create_new_user_path(httpx_mock: HTTPXMock, monkeypatch: pytest.M
 def test_apply_reactivate_inactive_user_path(
     httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """to_add for cached-inactive contact, same card: PUT ACTIVE, bind, assign — no DELETE."""
+    """to_add for cached-inactive contact: prep, bind, assign, then activate."""
     monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
     cert = b"fake-cert"
     fp = hashlib.sha256(cert).hexdigest()
@@ -1138,7 +1138,7 @@ def test_apply_reactivate_inactive_user_path(
         url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
         json=_cards_page([{"nfc_id": "2A04D2", "token": "tok-1234"}]),
     )
-    # PUT reactivate.
+    # PUT profile (still deactivated), then PUT activate.
     httpx_mock.add_response(
         method="PUT",
         url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42",
@@ -1156,6 +1156,11 @@ def test_apply_reactivate_inactive_user_path(
         url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42/access_policies",
         json={"code": "SUCCESS", "msg": "success", "data": None},
     )
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
 
     resolved = _resolved(contact_id=42, card_id=1234)
     client.apply(_diff(to_add=(resolved,)))
@@ -1169,7 +1174,7 @@ def test_apply_reactivate_inactive_user_path(
 def test_apply_reactivate_swaps_card_when_changed(
     httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """to_add for cached-inactive with different card_id: activate, DELETE old, bind new."""
+    """to_add for cached-inactive with different card_id: prep, delete old, bind, assign, activate."""
     monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
     cert = b"fake-cert"
     fp = hashlib.sha256(cert).hexdigest()
@@ -1211,7 +1216,7 @@ def test_apply_reactivate_swaps_card_when_changed(
             "data": [{"alias": "sync-01235", "nfc_id": "2A04D3", "token": "tok-1235"}],
         },
     )
-    # PUT reactivate.
+    # PUT profile (still deactivated), then PUT activate.
     httpx_mock.add_response(
         method="PUT",
         url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42",
@@ -1235,11 +1240,16 @@ def test_apply_reactivate_swaps_card_when_changed(
         url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42/access_policies",
         json={"code": "SUCCESS", "msg": "success", "data": None},
     )
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
 
     resolved = _resolved(contact_id=42, card_id=1235)
     client.apply(_diff(to_add=(resolved,)))
 
-    # Confirm sequence: PUT user (reactivate) → DELETE old → PUT new card → PUT policy.
+    # Confirm sequence: PUT user profile → DELETE old → PUT new card → PUT policy → PUT activate.
     methods_paths = [
         (r.method, r.url.path)
         for r in httpx_mock.get_requests()
@@ -1250,6 +1260,7 @@ def test_apply_reactivate_swaps_card_when_changed(
         ("DELETE", "/api/v1/developer/users/uuid-42/nfc_cards/delete"),
         ("PUT", "/api/v1/developer/users/uuid-42/nfc_cards"),
         ("PUT", "/api/v1/developer/users/uuid-42/access_policies"),
+        ("PUT", "/api/v1/developer/users/uuid-42"),
     ]
     client.close()
 
