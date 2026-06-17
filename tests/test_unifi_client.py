@@ -1789,6 +1789,61 @@ def test_apply_update_credential_email_only(
     client.close()
 
 
+def test_apply_update_credential_email_cleared_to_none(
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """email removed in CiviCRM (resolved.email=None) while UniFi has an email:
+    one PUT with user_email="" to clear it; no nfc_cards calls."""
+    monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
+    cert = b"fake-cert"
+    fp = hashlib.sha256(cert).hexdigest()
+    config = _unifi_config(fingerprint=fp)
+    with _patched_tls(cert):
+        client = UnifiClient(config)
+
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page(
+            [_user_row(contact_id=42, user_id="uuid-42", user_email="old@example.com")]
+        ),
+    )
+    fetched = client.fetch_users()
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_cards_page([{"nfc_id": "2A04D2", "token": "tok-1234"}]),
+    )
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+
+    resolved = ResolvedMember(
+        contact_id=42,
+        display_name="Jane Doe",  # same name as _user_row default
+        card_id=1234,  # same card
+        target_policy="pol-1",
+        resolution="tier",
+        email=None,  # email removed in CiviCRM
+    )
+    client.apply(_diff(to_update_credential=((resolved, fetched[0]),)))
+
+    put_req = next(
+        r
+        for r in httpx_mock.get_requests()
+        if r.method == "PUT" and r.url.path == "/api/v1/developer/users/uuid-42"
+    )
+    body = _json.loads(put_req.content)
+    assert body == {"user_email": ""}
+    user_nfc_calls = [
+        r for r in httpx_mock.get_requests() if "/users/uuid-42/nfc_cards" in str(r.url)
+    ]
+    assert user_nfc_calls == []
+    client.close()
+
+
 def test_apply_update_credential_name_and_email_single_put(
     httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
 ) -> None:

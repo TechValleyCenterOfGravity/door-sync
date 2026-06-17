@@ -654,7 +654,12 @@ class UnifiClient:
         first: str,
         last: str,
     ) -> None:
-        """Update an existing user's name and employee number, then remove stale NFC cards.
+        """Update an existing user's name, employee number, and email (if present), then remove stale NFC cards.
+
+        Sets first_name, last_name, and employee_number unconditionally. Also
+        sets user_email when resolved.email is not None. Stale NFC cards (any
+        card whose token differs from the new card's token) are deleted so the
+        bind step starts from a clean slate.
 
         Args:
             resolved: Resolved member data for the contact being reactivated.
