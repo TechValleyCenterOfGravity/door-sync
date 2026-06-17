@@ -371,12 +371,19 @@ class UnifiClient:
                 )
                 continue
 
+            user_fields: dict[str, Any] = {}
             if resolved.display_name != unifi_user.display_name:
                 first, last = _split_name(resolved.display_name)
+                user_fields["first_name"] = first
+                user_fields["last_name"] = last
+            if _email_differs_ci(resolved.email, unifi_user.email):
+                # Empty string clears the email in UniFi; a value sets it.
+                user_fields["user_email"] = resolved.email or ""
+            if user_fields:
                 self._request(
                     "PUT",
                     f"/api/v1/developer/users/{user_id}",
-                    json={"first_name": first, "last_name": last},
+                    json=user_fields,
                 )
                 time.sleep(self._INTER_CALL_DELAY_SECONDS)
 
@@ -466,11 +473,15 @@ class UnifiClient:
                 member.target_policy,
             )
         for resolved, unifi_user in diff.to_update_credential:
+            email_change = (
+                " email-change" if _email_differs_ci(resolved.email, unifi_user.email) else ""
+            )
             logger.info(
-                "would-update-credential contact=%d old_card=%s new_card=%s",
+                "would-update-credential contact=%d old_card=%s new_card=%s%s",
                 resolved.contact_id,
                 _redact(unifi_user.card_id),
                 _redact(resolved.card_id),
+                email_change,
             )
         for resolved, unifi_user in diff.to_update_policy:
             logger.info(
@@ -651,14 +662,17 @@ class UnifiClient:
             first: First name to set.
             last: Last name to set.
         """
+        body: dict[str, Any] = {
+            "first_name": first,
+            "last_name": last,
+            "employee_number": str(resolved.contact_id),
+        }
+        if resolved.email is not None:
+            body["user_email"] = resolved.email
         self._request(
             "PUT",
             f"/api/v1/developer/users/{user_id}",
-            json={
-                "first_name": first,
-                "last_name": last,
-                "employee_number": str(resolved.contact_id),
-            },
+            json=body,
         )
         time.sleep(self._INTER_CALL_DELAY_SECONDS)
         # Delete any old cards that differ from the new card_id.
@@ -706,15 +720,14 @@ class UnifiClient:
         Raises:
             UnifiClientError: If the API response does not contain an `id`.
         """
-        data = self._request(
-            "POST",
-            "/api/v1/developer/users",
-            json={
-                "first_name": first,
-                "last_name": last,
-                "employee_number": str(resolved.contact_id),
-            },
-        )
+        body: dict[str, Any] = {
+            "first_name": first,
+            "last_name": last,
+            "employee_number": str(resolved.contact_id),
+        }
+        if resolved.email is not None:
+            body["user_email"] = resolved.email
+        data = self._request("POST", "/api/v1/developer/users", json=body)
         time.sleep(self._INTER_CALL_DELAY_SECONDS)
         if not isinstance(data, dict) or "id" not in data:
             raise UnifiClientError(f"POST /users returned no id for contact={resolved.contact_id}")
@@ -804,6 +817,17 @@ def _parse_nfc_id(nfc_id: str, expected_facility_code: int) -> int | None:
     if fc != expected_facility_code:
         return None
     return cn
+
+
+def _email_differs_ci(a: str | None, b: str | None) -> bool:
+    """Case-insensitive email comparison; empty string and None are equal.
+
+    Duplicated from reconciler by design — importing reconciler here would
+    violate the strict layering in architecture §4. Both copies must agree.
+    """
+    na = a.lower() if a else None
+    nb = b.lower() if b else None
+    return na != nb
 
 
 def _split_name(display_name: str) -> tuple[str, str]:

@@ -1614,6 +1614,240 @@ def test_unifi_client_host_with_custom_port_preserves_it() -> None:
     client.close()
 
 
+def test_apply_create_includes_user_email_when_set(
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A new user with an email POSTs user_email in the create body."""
+    monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
+    cert = b"fake-cert"
+    fp = hashlib.sha256(cert).hexdigest()
+    config = _unifi_config(fingerprint=fp)
+    with _patched_tls(cert):
+        client = UnifiClient(config)
+
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page([], total=0),
+    )
+    client.fetch_users()
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_cards_page([{"nfc_id": "2A04D2", "token": "tok-1234"}]),
+    )
+    httpx_mock.add_response(
+        method="POST",
+        url="https://192.0.2.1:12445/api/v1/developer/users",
+        json={"code": "SUCCESS", "msg": "success", "data": {"id": "uuid-new"}},
+    )
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-new/nfc_cards",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-new/access_policies",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+
+    resolved = ResolvedMember(
+        contact_id=42,
+        display_name="Jane Doe",
+        card_id=1234,
+        target_policy="pol-1",
+        resolution="tier",
+        email="jane@example.com",
+    )
+    client.apply(_diff(to_add=(resolved,)))
+
+    post_user = next(
+        r
+        for r in httpx_mock.get_requests()
+        if r.method == "POST" and r.url.path == "/api/v1/developer/users"
+    )
+    body = _json.loads(post_user.content)
+    assert body == {
+        "first_name": "Jane",
+        "last_name": "Doe",
+        "employee_number": "42",
+        "user_email": "jane@example.com",
+    }
+    client.close()
+
+
+def test_apply_create_omits_user_email_when_none(
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A new user without an email POSTs no user_email key (unchanged body)."""
+    monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
+    cert = b"fake-cert"
+    fp = hashlib.sha256(cert).hexdigest()
+    config = _unifi_config(fingerprint=fp)
+    with _patched_tls(cert):
+        client = UnifiClient(config)
+
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page([], total=0),
+    )
+    client.fetch_users()
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_cards_page([{"nfc_id": "2A04D2", "token": "tok-1234"}]),
+    )
+    httpx_mock.add_response(
+        method="POST",
+        url="https://192.0.2.1:12445/api/v1/developer/users",
+        json={"code": "SUCCESS", "msg": "success", "data": {"id": "uuid-new"}},
+    )
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-new/nfc_cards",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-new/access_policies",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+
+    resolved = ResolvedMember(
+        contact_id=42,
+        display_name="Jane Doe",
+        card_id=1234,
+        target_policy="pol-1",
+        resolution="tier",
+        email=None,
+    )
+    client.apply(_diff(to_add=(resolved,)))
+
+    post_user = next(
+        r
+        for r in httpx_mock.get_requests()
+        if r.method == "POST" and r.url.path == "/api/v1/developer/users"
+    )
+    body = _json.loads(post_user.content)
+    assert body == {"first_name": "Jane", "last_name": "Doe", "employee_number": "42"}
+    client.close()
+
+
+def test_apply_update_credential_email_only(
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """email changes but name and card don't: one PUT carrying only user_email."""
+    monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
+    cert = b"fake-cert"
+    fp = hashlib.sha256(cert).hexdigest()
+    config = _unifi_config(fingerprint=fp)
+    with _patched_tls(cert):
+        client = UnifiClient(config)
+
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page(
+            [_user_row(contact_id=42, user_id="uuid-42", user_email="old@example.com")]
+        ),
+    )
+    fetched = client.fetch_users()
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_cards_page([{"nfc_id": "2A04D2", "token": "tok-1234"}]),
+    )
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+
+    resolved = ResolvedMember(
+        contact_id=42,
+        display_name="Jane Doe",  # same name as _user_row default
+        card_id=1234,  # same card
+        target_policy="pol-1",
+        resolution="tier",
+        email="new@example.com",
+    )
+    client.apply(_diff(to_update_credential=((resolved, fetched[0]),)))
+
+    put_req = next(
+        r
+        for r in httpx_mock.get_requests()
+        if r.method == "PUT" and r.url.path == "/api/v1/developer/users/uuid-42"
+    )
+    body = _json.loads(put_req.content)
+    assert body == {"user_email": "new@example.com"}
+    user_nfc_calls = [
+        r for r in httpx_mock.get_requests() if "/users/uuid-42/nfc_cards" in str(r.url)
+    ]
+    assert user_nfc_calls == []
+    client.close()
+
+
+def test_apply_update_credential_name_and_email_single_put(
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """name AND email change together: a single PUT carries all changed fields."""
+    monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
+    cert = b"fake-cert"
+    fp = hashlib.sha256(cert).hexdigest()
+    config = _unifi_config(fingerprint=fp)
+    with _patched_tls(cert):
+        client = UnifiClient(config)
+
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page(
+            [
+                _user_row(
+                    contact_id=42,
+                    user_id="uuid-42",
+                    first_name="Old",
+                    last_name="Name",
+                    user_email="old@example.com",
+                )
+            ]
+        ),
+    )
+    fetched = client.fetch_users()
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_cards_page([{"nfc_id": "2A04D2", "token": "tok-1234"}]),
+    )
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+
+    resolved = ResolvedMember(
+        contact_id=42,
+        display_name="New Name",
+        card_id=1234,
+        target_policy="pol-1",
+        resolution="tier",
+        email="new@example.com",
+    )
+    client.apply(_diff(to_update_credential=((resolved, fetched[0]),)))
+
+    put_reqs = [
+        r
+        for r in httpx_mock.get_requests()
+        if r.method == "PUT" and r.url.path == "/api/v1/developer/users/uuid-42"
+    ]
+    assert len(put_reqs) == 1  # one combined PUT, not two
+    body = _json.loads(put_reqs[0].content)
+    assert body == {"first_name": "New", "last_name": "Name", "user_email": "new@example.com"}
+    client.close()
+
+
 def test_apply_dry_run_logs_would_import_for_unknown_cards(
     httpx_mock: HTTPXMock, caplog: pytest.LogCaptureFixture
 ) -> None:
