@@ -312,12 +312,16 @@ class UnifiClient:
         display_name = " ".join(part for part in [first_name, last_name] if part).strip()
         active = str(row.get("status", "")) == "ACTIVE"
 
+        email_raw = row.get("user_email") or ""
+        email = str(email_raw) if email_raw else None
+
         return UnifiUser(
             contact_id=contact_id,
             display_name=display_name,
             card_id=card_id,
             active=active,
             policy=policy,
+            email=email,
         )
 
     def apply(self, diff: Diff) -> None:

@@ -298,8 +298,9 @@ def _user_row(
     nfc_id: str = "2A04D2",
     policy_id: str = "pol-1",
     nfc_token: str = "tok-42",
+    user_email: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    row: dict[str, Any] = {
         "id": user_id,
         "first_name": first_name,
         "last_name": last_name,
@@ -308,6 +309,9 @@ def _user_row(
         "nfc_cards": [{"id": "100001", "nfc_id": nfc_id, "token": nfc_token}],
         "access_policy_ids": [policy_id],
     }
+    if user_email is not None:
+        row["user_email"] = user_email
+    return row
 
 
 def _users_page(rows: list[dict[str, Any]], total: int | None = None) -> dict[str, Any]:
@@ -483,6 +487,30 @@ def test_fetch_users_foreign_fc_warning_does_not_leak_nfc_id(
     for rec in foreign_warnings:
         assert "63ABCD" not in rec.message
         assert "63abcd" not in rec.message
+    client.close()
+
+
+def test_fetch_users_parses_user_email(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page([_user_row(contact_id=42, user_email="jane@example.com")]),
+    )
+    client = _make_client()
+    users = client.fetch_users()
+    assert users[0].email == "jane@example.com"
+    client.close()
+
+
+def test_fetch_users_missing_user_email_is_none(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page([_user_row(contact_id=42)]),  # no user_email key
+    )
+    client = _make_client()
+    users = client.fetch_users()
+    assert users[0].email is None
     client.close()
 
 
