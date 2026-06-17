@@ -25,12 +25,16 @@ def _contact(
     contact_id: int,
     display_name: str = "Test Person",
     card_id: int | str = 100,
+    email: str | None = "person@example.com",
 ) -> dict[str, Any]:
-    return {
+    row: dict[str, Any] = {
         "id": contact_id,
         "display_name": display_name,
         "Door_Access.card_id": card_id,
     }
+    if email is not None:
+        row["email_primary.email"] = email
+    return row
 
 
 def _membership(
@@ -189,7 +193,12 @@ def test_request_uses_bearer_auth_and_form_body(httpx_mock: HTTPXMock) -> None:
     parsed = urllib.parse.parse_qs(body)
     params = json.loads(parsed["params"][0])
     assert "select" in params
-    assert params["select"] == ["id", "display_name", "Door_Access.card_id"]
+    assert params["select"] == [
+        "id",
+        "display_name",
+        "Door_Access.card_id",
+        "email_primary.email",
+    ]
 
 
 # --- Pagination ---
@@ -530,3 +539,35 @@ def test_unparseable_card_id_raises_with_contact_context(
     assert "non-numeric" in msg  # redacted type surfaced
     assert "not-a-number" not in msg  # raw value must NOT leak
     assert "Door_Access.card_id" in msg  # field name surfaced
+
+
+def test_fetch_active_maps_primary_email(httpx_mock: HTTPXMock) -> None:
+    _register_contacts(httpx_mock, [_contact(42, "Jane Doe", email="jane@example.com")])
+    _register_memberships(httpx_mock, [_membership(42, "Gold", "Current")])
+
+    with CivicrmClient(_config()) as client:
+        result = client.fetch_active()
+
+    assert result[0].email == "jane@example.com"
+
+
+def test_fetch_active_missing_email_is_none(httpx_mock: HTTPXMock) -> None:
+    _register_contacts(httpx_mock, [_contact(42, "Jane Doe", email=None)])
+    _register_memberships(httpx_mock, [_membership(42, "Gold", "Current")])
+
+    with CivicrmClient(_config()) as client:
+        result = client.fetch_active()
+
+    assert result[0].email is None
+
+
+def test_fetch_active_empty_email_string_is_none(httpx_mock: HTTPXMock) -> None:
+    contact = _contact(42, "Jane Doe")
+    contact["email_primary.email"] = ""
+    _register_contacts(httpx_mock, [contact])
+    _register_memberships(httpx_mock, [_membership(42, "Gold", "Current")])
+
+    with CivicrmClient(_config()) as client:
+        result = client.fetch_active()
+
+    assert result[0].email is None

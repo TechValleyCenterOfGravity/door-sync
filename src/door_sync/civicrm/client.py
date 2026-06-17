@@ -103,12 +103,15 @@ class CivicrmClient:
                     f"{self._config.card_id_field!r} has unparseable value "
                     f"({redacted})"
                 ) from e
+            raw_email = c.get("email_primary.email")
+            email = raw_email if isinstance(raw_email, str) and raw_email else None
             result.append(
                 CiviMember(
                     contact_id=cid,
                     display_name=str(c["display_name"]),
                     card_id=card_id,
                     membership_types=tuple(types_by_contact.get(cid, [])),
+                    email=email,
                 )
             )
         return result
@@ -121,7 +124,12 @@ class CivicrmClient:
                 "Contact",
                 "get",
                 {
-                    "select": ["id", "display_name", self._config.card_id_field],
+                    "select": [
+                        "id",
+                        "display_name",
+                        self._config.card_id_field,
+                        "email_primary.email",
+                    ],
                     "where": [
                         [self._config.card_id_field, "IS NOT EMPTY"],
                         ["is_deleted", "=", False],
