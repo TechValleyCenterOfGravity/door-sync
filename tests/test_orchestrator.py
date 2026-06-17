@@ -461,3 +461,81 @@ def test_handle_crash_truncates_long_exception_messages(tmp_path: Path) -> None:
     assert "..." in flag_text
     assert "x" * 200 in flag_text
     assert "x" * 201 not in flag_text
+
+
+def test_warns_when_tier_member_has_no_email(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A member resolving to a door tier with no CiviCRM email logs one WARN
+    but is still provisioned (warn-but-provision)."""
+    cfg = _config(tmp_path)
+    members = [
+        CiviMember(
+            contact_id=i,
+            display_name=f"User {i}",
+            card_id=0x1000 + i,
+            membership_types=("Gold",),
+            email="present@example.com",
+        )
+        for i in range(1, 12)
+    ]
+    members.append(
+        CiviMember(
+            contact_id=99,
+            display_name="No Email",
+            card_id=0x9999,
+            membership_types=("Gold",),
+            email=None,
+        )
+    )
+    users = [
+        UnifiUser(
+            contact_id=i, display_name=f"User {i}", card_id=0x1000 + i, active=True, policy="p1"
+        )
+        for i in range(1, 12)
+    ]
+    holder = _patch_clients(monkeypatch, civi_members=members, unifi_users=users)
+
+    with caplog.at_level(logging.WARNING, logger="door_sync.orchestrator"):
+        result = orchestrator.reconcile(cfg, dry_run=False)
+
+    assert result.halted is False
+    warnings = [r for r in caplog.records if "no email" in r.message and "99" in r.message]
+    assert len(warnings) == 1
+    unifi: FakeUnifiClient = holder["unifi"]
+    assert any(m.contact_id == 99 for m in unifi.apply_calls[0].to_add)
+
+
+def test_no_warn_when_non_tier_member_has_no_email(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A member with no membership (resolves to 'none') and no email does NOT warn."""
+    cfg = _config(tmp_path)
+    members = [
+        CiviMember(
+            contact_id=i,
+            display_name=f"User {i}",
+            card_id=0x1000 + i,
+            membership_types=("Gold",),
+            email="present@example.com",
+        )
+        for i in range(1, 13)
+    ]
+    members.append(
+        CiviMember(
+            contact_id=99, display_name="No Tier", card_id=0x9999, membership_types=(), email=None
+        )
+    )
+    users = [
+        UnifiUser(
+            contact_id=i, display_name=f"User {i}", card_id=0x1000 + i, active=True, policy="p1"
+        )
+        for i in range(1, 13)
+    ]
+    _patch_clients(monkeypatch, civi_members=members, unifi_users=users)
+
+    with caplog.at_level(logging.WARNING, logger="door_sync.orchestrator"):
+        orchestrator.reconcile(cfg, dry_run=False)
+
+    warnings = [r for r in caplog.records if "no email" in r.message]
+    assert warnings == []

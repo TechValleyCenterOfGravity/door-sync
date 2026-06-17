@@ -64,6 +64,13 @@ def reconcile(config: Config, *, dry_run: bool) -> ReconcileResult:
     ):
         civi_members = civicrm.fetch_active()
         resolved = [tier_mapping.resolve(m, config.tier_mapping) for m in civi_members]
+        for r in resolved:
+            if r.resolution == "tier" and r.email is None:
+                _logger.warning(
+                    "contact %d resolves to a door tier but has no email in CiviCRM; "
+                    "provisioning without invite delivery",
+                    r.contact_id,
+                )
         unifi_users = unifi.fetch_users()
 
         diff = reconciler.compute_diff(resolved, unifi_users)
