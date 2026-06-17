@@ -654,12 +654,15 @@ class UnifiClient:
         first: str,
         last: str,
     ) -> None:
-        """Update an existing user's name, employee number, and email (if present), then remove stale NFC cards.
+        """Update an existing user's name, employee number, and email, then remove stale NFC cards.
 
-        Sets first_name, last_name, and employee_number unconditionally. Also
-        sets user_email when resolved.email is not None. Stale NFC cards (any
-        card whose token differs from the new card's token) are deleted so the
-        bind step starts from a clean slate.
+        Sets first_name, last_name, employee_number, and user_email
+        unconditionally. Reactivation targets an existing record that may carry
+        a stale email, so an absent email is sent as an empty string to clear
+        it in the same cycle — matching the credential-update path. (True-create
+        omits user_email instead: a new record has nothing to clear.) Stale NFC
+        cards (any card whose token differs from the new card's token) are
+        deleted so the bind step starts from a clean slate.
 
         Args:
             resolved: Resolved member data for the contact being reactivated.
@@ -671,9 +674,8 @@ class UnifiClient:
             "first_name": first,
             "last_name": last,
             "employee_number": str(resolved.contact_id),
+            "user_email": resolved.email or "",
         }
-        if resolved.email is not None:
-            body["user_email"] = resolved.email
         self._request(
             "PUT",
             f"/api/v1/developer/users/{user_id}",

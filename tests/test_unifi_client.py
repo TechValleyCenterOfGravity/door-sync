@@ -1210,6 +1210,80 @@ def test_apply_reactivate_inactive_user_path(
     client.close()
 
 
+def test_apply_reactivate_clears_stale_email_when_none(
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reactivating a member whose CiviCRM email was removed clears the stale
+    UniFi email in the same cycle (profile PUT sends user_email="")."""
+    monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
+    cert = b"fake-cert"
+    fp = hashlib.sha256(cert).hexdigest()
+    config = _unifi_config(fingerprint=fp)
+    with _patched_tls(cert):
+        client = UnifiClient(config)
+
+    # Fetch returns user 42 inactive, same card, but carrying a stale email.
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page(
+            [
+                _user_row(
+                    contact_id=42,
+                    user_id="uuid-42",
+                    status="DEACTIVATED",
+                    nfc_id="2A04D2",
+                    nfc_token="tok-1234",
+                    user_email="stale@example.com",
+                )
+            ]
+        ),
+    )
+    client.fetch_users()
+
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_cards_page([{"nfc_id": "2A04D2", "token": "tok-1234"}]),
+    )
+    # Profile PUT and activate PUT both target /users/uuid-42.
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42/nfc_cards",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42/access_policies",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+
+    resolved = _resolved(contact_id=42, card_id=1234)  # email defaults to None
+    client.apply(_diff(to_add=(resolved,)))
+
+    user_puts = [
+        r
+        for r in httpx_mock.get_requests()
+        if r.method == "PUT" and r.url.path == "/api/v1/developer/users/uuid-42"
+    ]
+    profile_put_body = _json.loads(
+        next(r for r in user_puts if "employee_number" in _json.loads(r.content)).content
+    )
+    assert profile_put_body["user_email"] == ""
+
+    client.close()
+
+
 def test_apply_reactivate_swaps_card_when_changed(
     httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2021,8 +2095,11 @@ def test_apply_reactivate_includes_user_email_when_set(
     )
     assert profile_put_body["user_email"] == "react@example.com"
     assert profile_put_body["employee_number"] == "42"
-    # The activate PUT must not contain user_email.
-    activate_put_body = _json.loads(user_puts[1].content)
+    # The activate PUT carries only status; select it by body, not by index,
+    # so the assertion doesn't depend on request ordering.
+    activate_put_body = _json.loads(
+        next(r for r in user_puts if "employee_number" not in _json.loads(r.content)).content
+    )
     assert activate_put_body == {"status": "ACTIVE"}
 
     client.close()
