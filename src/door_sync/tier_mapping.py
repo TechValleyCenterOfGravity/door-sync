@@ -24,6 +24,7 @@ def resolve(member: CiviMember, mapping: TierMapping) -> ResolvedMember:
             card_id=member.card_id,
             target_policy=None,
             resolution="none",
+            email=member.email,
         )
 
     matched: list[tuple[str, TierRule]] = []
@@ -36,6 +37,7 @@ def resolve(member: CiviMember, mapping: TierMapping) -> ResolvedMember:
                 card_id=member.card_id,
                 target_policy=None,
                 resolution="unmapped",
+                email=member.email,
             )
         matched.append((type_name, rule))
 
@@ -48,6 +50,7 @@ def resolve(member: CiviMember, mapping: TierMapping) -> ResolvedMember:
         card_id=member.card_id,
         target_policy=chosen.target_policy,
         resolution=chosen.resolution,
+        email=member.email,
     )
 
 
