@@ -75,7 +75,7 @@ class Diff:
 
     Parameters:
         to_add: Members to provision as new UniFi users.
-        to_update_credential: Members whose card ID or display name changed, paired with current UniFi state.
+        to_update_credential: Members whose card ID, display name, or email changed, paired with current UniFi state.
         to_update_policy: Members whose access policy changed, paired with current UniFi state.
         to_deactivate: UniFi users to deactivate (no longer in CiviCRM or resolved to 'none').
         unmapped: Members with membership types that have no matching tier rule.

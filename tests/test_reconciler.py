@@ -273,6 +273,7 @@ def test_idempotency_canary() -> None:
     #   - 5: none, present + active → to_deactivate
     #   - 6: not in resolved, present + active → to_deactivate
     #   - 7: tier, identical → no-op
+    #   - 8: tier, email differs only → to_update_credential (email convergence path)
     resolved = [
         _resolved(contact_id=1, card_id=10, target_policy="P_GOLD"),
         _resolved(contact_id=2, card_id=20, target_policy="P_GOLD"),
@@ -280,6 +281,7 @@ def test_idempotency_canary() -> None:
         _resolved(contact_id=4, card_id=40, target_policy="P_PLAT"),
         _resolved(contact_id=5, resolution="none", target_policy=None, card_id=50),
         _resolved(contact_id=7, card_id=70, target_policy="P_GOLD"),
+        _resolved(contact_id=8, card_id=80, target_policy="P_GOLD", email="new8@example.com"),
     ]
     unifi = [
         _unifi(contact_id=2, card_id=99, policy="P_GOLD"),
@@ -288,6 +290,7 @@ def test_idempotency_canary() -> None:
         _unifi(contact_id=5, card_id=50, policy="P_GOLD", active=True),
         _unifi(contact_id=6, card_id=60, policy="P_GOLD", active=True),
         _unifi(contact_id=7, card_id=70, policy="P_GOLD"),
+        _unifi(contact_id=8, card_id=80, policy="P_GOLD", email="old8@example.com"),
     ]
 
     first = compute_diff(resolved, unifi)
