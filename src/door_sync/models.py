@@ -17,12 +17,14 @@ class CiviMember:
         display_name: Contact's display name from CiviCRM.
         card_id: Wiegand-26 card number, or None if not provisioned.
         membership_types: Active membership type labels (Current/Grace status).
+        email: Contact's primary email from CiviCRM, or None if absent.
     """
 
     contact_id: int
     display_name: str
     card_id: int | None
     membership_types: tuple[str, ...]
+    email: str | None = None
 
 
 @dataclass(frozen=True)
@@ -35,6 +37,7 @@ class ResolvedMember:
         card_id: Wiegand-26 card number, or None if not provisioned.
         target_policy: UniFi access policy ID to assign, or None.
         resolution: Outcome of tier mapping: tier, none, day-pass, or unmapped.
+        email: Contact's primary email carried through from CiviCRM, or None.
     """
 
     contact_id: int
@@ -42,6 +45,7 @@ class ResolvedMember:
     card_id: int | None
     target_policy: str | None
     resolution: Literal["tier", "none", "day-pass", "unmapped"]
+    email: str | None = None
 
 
 @dataclass(frozen=True)
@@ -54,6 +58,7 @@ class UnifiUser:
         card_id: Wiegand-26 card number parsed from NFC ID, or None.
         active: Whether the user's UniFi status is ACTIVE.
         policy: Current access policy ID, or None if unassigned.
+        email: User's email (user_email) as read from UniFi, or None.
     """
 
     contact_id: int
@@ -61,6 +66,7 @@ class UnifiUser:
     card_id: int | None
     active: bool
     policy: str | None
+    email: str | None = None
 
 
 @dataclass(frozen=True)
