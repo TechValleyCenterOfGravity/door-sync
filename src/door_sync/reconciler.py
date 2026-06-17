@@ -7,6 +7,17 @@ returns a Diff dataclass.
 from door_sync.models import Diff, ResolvedMember, UnifiUser
 
 
+def _norm_email(email: str | None) -> str | None:
+    """Normalize an email for comparison: empty string and None collapse to None,
+    everything else lowercases. Pure; no I/O."""
+    return email.lower() if email else None
+
+
+def _email_differs(a: str | None, b: str | None) -> bool:
+    """Case-insensitive email comparison; None and '' are treated as equal."""
+    return _norm_email(a) != _norm_email(b)
+
+
 def compute_diff(resolved: list[ResolvedMember], unifi: list[UnifiUser]) -> Diff:
     """Compute the set of changes needed to reconcile UniFi with CiviCRM.
 
@@ -63,7 +74,11 @@ def compute_diff(resolved: list[ResolvedMember], unifi: list[UnifiUser]) -> Diff
             continue
 
         # u present + active + tier resolution
-        cred_changed = u.card_id != r.card_id or u.display_name != r.display_name
+        cred_changed = (
+            u.card_id != r.card_id
+            or u.display_name != r.display_name
+            or _email_differs(r.email, u.email)
+        )
         pol_changed = u.policy != r.target_policy
 
         if cred_changed:

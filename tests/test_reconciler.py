@@ -10,6 +10,7 @@ def _resolved(
     card_id: int | None = 100,
     target_policy: str | None = "P_GOLD",
     resolution: Literal["tier", "none", "day-pass", "unmapped"] = "tier",
+    email: str | None = "alice@example.com",
 ) -> ResolvedMember:
     return ResolvedMember(
         contact_id=contact_id,
@@ -17,6 +18,7 @@ def _resolved(
         card_id=card_id,
         target_policy=target_policy,
         resolution=resolution,
+        email=email,
     )
 
 
@@ -26,6 +28,7 @@ def _unifi(
     card_id: int | None = 100,
     active: bool = True,
     policy: str | None = "P_GOLD",
+    email: str | None = "alice@example.com",
 ) -> UnifiUser:
     return UnifiUser(
         contact_id=contact_id,
@@ -33,6 +36,7 @@ def _unifi(
         card_id=card_id,
         active=active,
         policy=policy,
+        email=email,
     )
 
 
@@ -65,6 +69,37 @@ def test_tier_display_name_differs_updates_credential() -> None:
     d = compute_diff([r], [u])
     assert d.to_update_credential == ((r, u),)
     assert d.to_update_policy == ()
+
+
+def test_tier_email_differs_updates_credential() -> None:
+    r = _resolved(email="new@example.com")
+    u = _unifi(email="old@example.com")
+    d = compute_diff([r], [u])
+    assert d.to_update_credential == ((r, u),)
+    assert d.to_update_policy == ()
+    assert d.to_add == ()
+    assert d.to_deactivate == ()
+
+
+def test_tier_email_case_only_difference_is_noop() -> None:
+    r = _resolved(email="Alice@Example.com")
+    u = _unifi(email="alice@example.com")
+    d = compute_diff([r], [u])
+    assert d.to_update_credential == ()
+
+
+def test_tier_email_none_vs_empty_is_noop() -> None:
+    r = _resolved(email=None)
+    u = _unifi(email="")
+    d = compute_diff([r], [u])
+    assert d.to_update_credential == ()
+
+
+def test_tier_email_set_vs_none_updates_credential() -> None:
+    r = _resolved(email="alice@example.com")
+    u = _unifi(email=None)
+    d = compute_diff([r], [u])
+    assert d.to_update_credential == ((r, u),)
 
 
 def test_tier_policy_differs_updates_policy() -> None:
@@ -190,6 +225,7 @@ def apply_diff_in_memory(diff: Diff, unifi: list[UnifiUser]) -> list[UnifiUser]:
             card_id=r.card_id,
             active=True,
             policy=r.target_policy,
+            email=r.email,
         )
 
     for r, u in diff.to_update_credential:
@@ -200,6 +236,7 @@ def apply_diff_in_memory(diff: Diff, unifi: list[UnifiUser]) -> list[UnifiUser]:
             card_id=r.card_id,
             active=existing.active,
             policy=existing.policy,
+            email=r.email,
         )
 
     for r, u in diff.to_update_policy:
@@ -210,6 +247,7 @@ def apply_diff_in_memory(diff: Diff, unifi: list[UnifiUser]) -> list[UnifiUser]:
             card_id=existing.card_id,
             active=existing.active,
             policy=r.target_policy,
+            email=existing.email,
         )
 
     for u in diff.to_deactivate:
@@ -220,6 +258,7 @@ def apply_diff_in_memory(diff: Diff, unifi: list[UnifiUser]) -> list[UnifiUser]:
             card_id=existing.card_id,
             active=False,
             policy=existing.policy,
+            email=existing.email,
         )
 
     return list(by_id.values())
