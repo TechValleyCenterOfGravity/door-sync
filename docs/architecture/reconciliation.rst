@@ -178,6 +178,10 @@ Key design properties:
 - **Clients are per-cycle.** They're cheap to construct and this gives clean
   isolation between cycles, avoiding stale HTTP sessions.
 - **Exceptions propagate.** The orchestrator does not catch — the scheduler's
-  per-cycle ``try/except`` handles crashes.
+  per-cycle ``try/except`` handles crashes. Within ``apply()`` itself, a single
+  contact's failure is isolated (logged and skipped) so the rest of the cycle
+  still applies; a summary error is then raised so the failure still surfaces.
+  Email writes are best-effort: an address already registered to another UniFi
+  account is dropped and warned rather than failing the contact.
 - **One function, many callers.** The same ``reconcile()`` is called by the
   daemon loop, the ``--once`` CLI mode, and (in the future) the webhook handler.

@@ -78,7 +78,16 @@ exceptions on data issues. They return sentinel values — for example,
 orchestrator decide how to handle them.
 
 **Clients** (``civicrm.client``, ``unifi.client``) raise after exhausting
-retries. Client exceptions propagate through the orchestrator to the scheduler.
+retries. Client exceptions propagate through the orchestrator to the scheduler,
+with two refinements inside ``unifi.apply()``:
+
+- **Per-user isolation.** A single contact's ``UnifiClientError`` is logged,
+  recorded, and skipped so the remaining contacts still apply; ``apply()`` then
+  raises one summary error at the end so the failure is still surfaced.
+- **Best-effort email.** UniFi requires globally-unique emails across users and
+  admins, so an email already registered to another account is dropped from the
+  write (the rest of the record still applies) and warned — not treated as a
+  failure.
 
 **The scheduler** catches per-cycle exceptions, logs them, writes a crash
 audit record, and continues to the next cycle.
