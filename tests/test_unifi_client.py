@@ -19,6 +19,7 @@ from door_sync.unifi.client import (
     UnifiClientError,
     _compute_nfc_id,
     _parse_nfc_id,
+    _parse_sync_alias,
     _redact,
     _split_name,
 )
@@ -57,6 +58,23 @@ def test_parse_nfc_id_garbage_returns_none() -> None:
 def test_parse_nfc_id_lowercase_hex_still_parses() -> None:
     """Defensive: don't trust UniFi to always uppercase the response."""
     assert _parse_nfc_id("2a04d3", 42) == 1235
+
+
+# --- Sync alias parsing ---
+
+
+def test_parse_sync_alias_recovers_card_id() -> None:
+    """door-sync imports cards as sync-<padded card_id>; recover the card_id."""
+    assert _parse_sync_alias("sync-01234") == 1234
+    assert _parse_sync_alias("sync-00007") == 7
+
+
+def test_parse_sync_alias_non_sync_returns_none() -> None:
+    """Cards not provisioned by door-sync (no 'sync-' alias) are unrecognized."""
+    assert _parse_sync_alias("") is None
+    assert _parse_sync_alias("Front Desk Card") is None
+    assert _parse_sync_alias("sync-") is None
+    assert _parse_sync_alias("sync-abc") is None
 
 
 # --- Name splitting ---
@@ -327,23 +345,51 @@ def _user_row(
     first_name: str = "Jane",
     last_name: str = "Doe",
     status: str = "ACTIVE",
-    nfc_id: str = "2A04D2",
     policy_id: str = "pol-1",
-    nfc_token: str = "tok-42",
+    nfc_token: str | None = None,
+    display_id: str = "100001",
     user_email: str | None = None,
 ) -> dict[str, Any]:
+    """Build a /users row matching the real API shape.
+
+    A card is included only when ``nfc_token`` is given; the card object carries
+    ``id``/``token``/``type`` (the real fields — there is no ``nfc_id`` here).
+    Card numbers are resolved from the token via the card list (see
+    ``_card_tokens_page``), so a carded row needs a matching /tokens mock.
+    """
+    nfc_cards = (
+        [{"id": display_id, "token": nfc_token, "type": "id_card"}] if nfc_token is not None else []
+    )
     row: dict[str, Any] = {
         "id": user_id,
         "first_name": first_name,
         "last_name": last_name,
         "employee_number": str(contact_id),
         "status": status,
-        "nfc_cards": [{"id": "100001", "nfc_id": nfc_id, "token": nfc_token}],
+        "nfc_cards": nfc_cards,
         "access_policy_ids": [policy_id],
     }
     if user_email is not None:
         row["user_email"] = user_email
     return row
+
+
+def _card_tokens_page(cards: list[tuple[int, str]], total: int | None = None) -> dict[str, Any]:
+    """Build a /credentials/nfc_cards/tokens page from (card_id, token) pairs.
+
+    Each card is rendered with the door-sync alias ``sync-<card_id>`` and a
+    ``display_id`` — matching the real card-list shape (no ``nfc_id``)."""
+    rows = [
+        {
+            "display_id": f"10{card_id:04d}",
+            "alias": f"sync-{card_id:05d}",
+            "token": token,
+            "card_type": "id_card",
+            "status": "assigned",
+        }
+        for card_id, token in cards
+    ]
+    return _cards_page(rows, total=total)
 
 
 def _users_page(rows: list[dict[str, Any]], total: int | None = None) -> dict[str, Any]:
@@ -366,7 +412,12 @@ def test_fetch_users_happy_path(
     httpx_mock.add_response(
         method="GET",
         url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
-        json=_users_page([_user_row(contact_id=42)]),
+        json=_users_page([_user_row(contact_id=42, nfc_token="tok-42")]),
+    )
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_card_tokens_page([(1234, "tok-42")]),
     )
     client = make_client()
     users = client.fetch_users()
@@ -374,7 +425,7 @@ def test_fetch_users_happy_path(
     u = users[0]
     assert u.contact_id == 42
     assert u.display_name == "Jane Doe"
-    assert u.card_id == 1234  # 2A04D2 decoded with FC=42 -> CN=1234
+    assert u.card_id == 1234  # resolved via token "tok-42" -> alias "sync-01234"
     assert u.active is True
     assert u.policy == "pol-1"
 
@@ -466,18 +517,23 @@ def test_fetch_users_logs_warning_on_multiple_cards(
 ) -> None:
     row = _user_row(contact_id=42)
     row["nfc_cards"] = [
-        {"id": "100001", "nfc_id": "2A04D2", "token": "tok-1"},
-        {"id": "100002", "nfc_id": "2A04D3", "token": "tok-2"},
+        {"id": "100001", "token": "tok-1", "type": "id_card"},
+        {"id": "100002", "token": "tok-2", "type": "id_card"},
     ]
     httpx_mock.add_response(
         method="GET",
         url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
         json=_users_page([row]),
     )
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_card_tokens_page([(1234, "tok-1"), (1235, "tok-2")]),
+    )
     with caplog.at_level(logging.WARNING, logger="door_sync.unifi.client"):
         client = make_client()
         users = client.fetch_users()
-    assert users[0].card_id == 1234  # uses the first card
+    assert users[0].card_id == 1234  # uses the first card (token "tok-1")
     assert any("2 cards" in rec.message for rec in caplog.records)
 
 
@@ -549,41 +605,75 @@ def test_fetch_users_unmanaged_only_yields_policy_none(
     assert users[0].policy is None
 
 
-def test_fetch_users_foreign_fc_card_yields_card_id_none(
+def test_fetch_users_resolves_card_id_from_token_via_alias(
     httpx_mock: HTTPXMock, make_client: Callable[..., UnifiClient]
 ) -> None:
-    """A card with a non-configured facility code -> card_id=None on the user."""
-    row = _user_row(contact_id=42, nfc_id="990000")  # FC=99, not 42
+    """The /users endpoint returns a card's token (not its Wiegand nfc_id), so
+    card_id is recovered by joining that token to the card list, whose alias
+    encodes the number (sync-<card_id>). Mirrors a real /users response."""
+    token = "6809495d4ce20dc39759640418d86386f1d05724edcc53b97c551507e4952a70"
+    row = {
+        "id": "a64b4238-7df2-4d04-9156-5bbd03d0daa3",
+        "first_name": "Abigail",
+        "last_name": "Mathews",
+        "employee_number": "774",
+        "status": "ACTIVE",
+        "nfc_cards": [{"id": "100025", "token": token, "type": "id_card"}],
+        "access_policy_ids": [],
+    }
     httpx_mock.add_response(
         method="GET",
         url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
         json=_users_page([row]),
+    )
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_cards_page(
+            [
+                {
+                    "display_id": "100025",
+                    "alias": "sync-01234",
+                    "token": token,
+                    "card_type": "id_card",
+                    "status": "assigned",
+                }
+            ]
+        ),
+    )
+    client = make_client()
+    users = client.fetch_users()
+    assert users[0].contact_id == 774
+    assert users[0].card_id == 1234  # recovered via token -> alias "sync-01234"
+
+
+def test_fetch_users_unrecognized_card_token_yields_card_id_none(
+    httpx_mock: HTTPXMock, make_client: Callable[..., UnifiClient]
+) -> None:
+    """A card whose token isn't in the door-sync-managed card list (no sync-
+    alias) resolves to card_id=None rather than a wrong number."""
+    row = {
+        "id": "uuid-1",
+        "first_name": "Jane",
+        "last_name": "Doe",
+        "employee_number": "1",
+        "status": "ACTIVE",
+        "nfc_cards": [{"id": "100099", "token": "tok-unknown", "type": "id_card"}],
+        "access_policy_ids": [],
+    }
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page([row]),
+    )
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_cards_page([{"display_id": "1", "alias": "Front Desk", "token": "tok-other"}]),
     )
     client = make_client()
     users = client.fetch_users()
     assert users[0].card_id is None
-
-
-def test_fetch_users_foreign_fc_warning_does_not_leak_nfc_id(
-    httpx_mock: HTTPXMock, caplog: pytest.LogCaptureFixture, make_client: Callable[..., UnifiClient]
-) -> None:
-    """The foreign-FC warning must not log the raw nfc_id (architecture §11)."""
-    row = _user_row(contact_id=42, nfc_id="63ABCD")  # FC=0x63=99, CN=0xABCD
-    httpx_mock.add_response(
-        method="GET",
-        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
-        json=_users_page([row]),
-    )
-    with caplog.at_level(logging.WARNING, logger="door_sync.unifi.client"):
-        client = make_client()
-        client.fetch_users()
-
-    # The warning must mention contact_id 42 but never the raw nfc_id.
-    foreign_warnings = [r for r in caplog.records if "foreign-FC" in r.message]
-    assert foreign_warnings, "expected a foreign-FC warning for the test row"
-    for rec in foreign_warnings:
-        assert "63ABCD" not in rec.message
-        assert "63abcd" not in rec.message
 
 
 def test_fetch_users_parses_user_email(
@@ -732,7 +822,8 @@ def _cards_page(rows: list[dict[str, Any]], total: int | None = None) -> dict[st
 def test_token_map_keys_by_parsed_card_id(
     httpx_mock: HTTPXMock, make_client: Callable[..., UnifiClient]
 ) -> None:
-    """Build dict[card_id → token]; foreign-FC and unparseable rows are skipped."""
+    """Build dict[card_id → token] from the sync- alias; cards not provisioned
+    by door-sync (no sync- alias) are skipped. Reverse map is built too."""
     client = make_client()
 
     httpx_mock.add_response(
@@ -740,15 +831,16 @@ def test_token_map_keys_by_parsed_card_id(
         url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
         json=_cards_page(
             [
-                {"nfc_id": "2A04D2", "token": "tok-1234", "display_id": "100001"},
-                {"nfc_id": "2A04D3", "token": "tok-1235", "display_id": "100002"},
-                {"nfc_id": "990000", "token": "tok-foreign", "display_id": "100003"},
-                {"nfc_id": "not-hex", "token": "tok-bad", "display_id": "100004"},
+                {"alias": "sync-01234", "token": "tok-1234", "display_id": "100001"},
+                {"alias": "sync-01235", "token": "tok-1235", "display_id": "100002"},
+                {"alias": "Front Desk", "token": "tok-manual", "display_id": "100003"},
+                {"alias": "", "token": "tok-noalias", "display_id": "100004"},
             ]
         ),
     )
     token_map = client._ensure_nfc_token_map()
     assert token_map == {1234: "tok-1234", 1235: "tok-1235"}
+    assert client._card_id_by_token == {"tok-1234": 1234, "tok-1235": 1235}
 
 
 def test_token_map_cached_across_calls(
@@ -760,7 +852,7 @@ def test_token_map_cached_across_calls(
     httpx_mock.add_response(
         method="GET",
         url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
-        json=_cards_page([{"nfc_id": "2A04D2", "token": "tok-1234"}]),
+        json=_card_tokens_page([(1234, "tok-1234")]),
     )
     first = client._ensure_nfc_token_map()
     second = client._ensure_nfc_token_map()
@@ -943,7 +1035,15 @@ def test_apply_update_credential_swaps_card(
 
     client = make_client()
 
-    # Fetch returns user 42 with old card_id=1234 (nfc_id=2A04D2, token=tok-1234).
+    # Token map fetch (old card 1234 known; the new card 1235 is not yet in the
+    # map). Registered before fetch_users() because fetch resolves card numbers
+    # from tokens via the card list.
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_card_tokens_page([(1234, "tok-1234")]),
+    )
+    # Fetch returns user 42 with old card_id=1234 (token=tok-1234).
     httpx_mock.add_response(
         method="GET",
         url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
@@ -952,7 +1052,6 @@ def test_apply_update_credential_swaps_card(
                 _user_row(
                     contact_id=42,
                     user_id="uuid-42",
-                    nfc_id="2A04D2",
                     nfc_token="tok-1234",
                 )
             ]
@@ -960,16 +1059,6 @@ def test_apply_update_credential_swaps_card(
     )
     fetched = client.fetch_users()
 
-    # Token map fetch (the new card is not yet in the map).
-    httpx_mock.add_response(
-        method="GET",
-        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
-        json=_cards_page(
-            [
-                {"nfc_id": "2A04D2", "token": "tok-1234"},
-            ]
-        ),
-    )
     # Import for the new card 1235.
     httpx_mock.add_response(
         method="POST",
@@ -1026,6 +1115,13 @@ def test_apply_update_credential_name_only(
     monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
     client = make_client()
 
+    # Token-map fetch (matching card, no import needed). Registered before
+    # fetch_users() because fetch resolves card numbers from tokens.
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_card_tokens_page([(1234, "tok-1234")]),
+    )
     httpx_mock.add_response(
         method="GET",
         url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
@@ -1036,19 +1132,13 @@ def test_apply_update_credential_name_only(
                     user_id="uuid-42",
                     first_name="Old",
                     last_name="Name",
-                    nfc_id="2A04D2",
+                    nfc_token="tok-1234",
                 )
             ]
         ),
     )
     fetched = client.fetch_users()
 
-    # Token-map fetch (matching card, no import needed).
-    httpx_mock.add_response(
-        method="GET",
-        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
-        json=_cards_page([{"nfc_id": "2A04D2", "token": "tok-1234"}]),
-    )
     httpx_mock.add_response(
         method="PUT",
         url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42",
@@ -1216,6 +1306,13 @@ def test_apply_reactivate_inactive_user_path(
     monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
     client = make_client()
 
+    # Token-map fetch (card already known). Registered before fetch_users()
+    # because fetch resolves card numbers from tokens.
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_card_tokens_page([(1234, "tok-1234")]),
+    )
     # Fetch returns user 42 inactive with the same card.
     httpx_mock.add_response(
         method="GET",
@@ -1226,7 +1323,6 @@ def test_apply_reactivate_inactive_user_path(
                     contact_id=42,
                     user_id="uuid-42",
                     status="DEACTIVATED",
-                    nfc_id="2A04D2",
                     nfc_token="tok-1234",
                 )
             ]
@@ -1234,12 +1330,6 @@ def test_apply_reactivate_inactive_user_path(
     )
     client.fetch_users()
 
-    # Token-map fetch (card already known).
-    httpx_mock.add_response(
-        method="GET",
-        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
-        json=_cards_page([{"nfc_id": "2A04D2", "token": "tok-1234"}]),
-    )
     # PUT profile (still deactivated), then PUT activate.
     httpx_mock.add_response(
         method="PUT",
@@ -1290,6 +1380,13 @@ def test_apply_reactivate_clears_stale_email_when_none(
     monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
     client = make_client()
 
+    # Token-map fetch, registered before fetch_users() (fetch resolves card
+    # numbers from tokens).
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_card_tokens_page([(1234, "tok-1234")]),
+    )
     # Fetch returns user 42 inactive, same card, but carrying a stale email.
     httpx_mock.add_response(
         method="GET",
@@ -1300,7 +1397,6 @@ def test_apply_reactivate_clears_stale_email_when_none(
                     contact_id=42,
                     user_id="uuid-42",
                     status="DEACTIVATED",
-                    nfc_id="2A04D2",
                     nfc_token="tok-1234",
                     user_email="stale@example.com",
                 )
@@ -1309,11 +1405,6 @@ def test_apply_reactivate_clears_stale_email_when_none(
     )
     client.fetch_users()
 
-    httpx_mock.add_response(
-        method="GET",
-        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
-        json=_cards_page([{"nfc_id": "2A04D2", "token": "tok-1234"}]),
-    )
     # Profile PUT and activate PUT both target /users/uuid-42.
     httpx_mock.add_response(
         method="PUT",
@@ -1357,6 +1448,13 @@ def test_apply_reactivate_swaps_card_when_changed(
     monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
     client = make_client()
 
+    # Token-map: old card known, new one not. Registered before fetch_users()
+    # (fetch resolves card numbers from tokens).
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_card_tokens_page([(1234, "tok-1234")]),
+    )
     # Fetch: inactive user with OLD card_id=1234.
     httpx_mock.add_response(
         method="GET",
@@ -1367,7 +1465,6 @@ def test_apply_reactivate_swaps_card_when_changed(
                     contact_id=42,
                     user_id="uuid-42",
                     status="DEACTIVATED",
-                    nfc_id="2A04D2",
                     nfc_token="tok-1234",
                 )
             ]
@@ -1375,12 +1472,6 @@ def test_apply_reactivate_swaps_card_when_changed(
     )
     client.fetch_users()
 
-    # Token-map: old card known, new one not.
-    httpx_mock.add_response(
-        method="GET",
-        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
-        json=_cards_page([{"nfc_id": "2A04D2", "token": "tok-1234"}]),
-    )
     # Import for new card 1235.
     httpx_mock.add_response(
         method="POST",
@@ -1459,18 +1550,25 @@ def test_apply_executes_deactivate_update_credential_update_policy_add_order(
     # 3 users in fetch: 100 (deactivate), 101 (update_credential), 102 (update_policy).
     # Users 101 and 102 have names matching what _resolved() produces ("Member N")
     # so no name-PUT fires — only the card swap for 101 and policy update for 102.
+    # Token-map fetch, registered before fetch_users() (fetch resolves card
+    # numbers from tokens). Includes card 1238 so no import is needed for the
+    # 101 swap; 100/101/102 hold cards 1234/1235/1236.
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_card_tokens_page([(1234, "t100"), (1235, "t101"), (1236, "t102"), (1238, "t1238")]),
+    )
     httpx_mock.add_response(
         method="GET",
         url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
         json=_users_page(
             [
-                _user_row(contact_id=100, user_id="u100", nfc_id="2A04D2", nfc_token="t100"),
+                _user_row(contact_id=100, user_id="u100", nfc_token="t100"),
                 _user_row(
                     contact_id=101,
                     user_id="u101",
                     first_name="Member",
                     last_name="101",
-                    nfc_id="2A04D3",
                     nfc_token="t101",
                 ),
                 _user_row(
@@ -1478,7 +1576,6 @@ def test_apply_executes_deactivate_update_credential_update_policy_add_order(
                     user_id="u102",
                     first_name="Member",
                     last_name="102",
-                    nfc_id="2A04D4",
                     nfc_token="t102",
                     policy_id="old",
                 ),
@@ -1487,20 +1584,6 @@ def test_apply_executes_deactivate_update_credential_update_policy_add_order(
     )
     fetched = client.fetch_users()
     by_id = {u.contact_id: u for u in fetched}
-
-    # Token-map fetch. Includes card 1238 (2A04D6) so no import is needed.
-    httpx_mock.add_response(
-        method="GET",
-        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
-        json=_cards_page(
-            [
-                {"nfc_id": "2A04D2", "token": "t100"},
-                {"nfc_id": "2A04D3", "token": "t101"},
-                {"nfc_id": "2A04D4", "token": "t102"},
-                {"nfc_id": "2A04D6", "token": "t1238"},
-            ]
-        ),
-    )
 
     # Pre-set generic SUCCESS responses for the writes.
     for url, method in [
@@ -1543,15 +1626,20 @@ def test_fetch_users_warning_does_not_leak_card_id(
 ) -> None:
     """The multi-card warning must not log full card_ids (architecture §11)."""
     row = _user_row(contact_id=42)
-    # Two cards with distinct nfc_ids — both decode to card_ids under FC=42.
+    # Two cards; both resolve to card_ids under the sync- alias scheme.
     row["nfc_cards"] = [
-        {"id": "100001", "nfc_id": "2A04D2", "token": "tok-1"},  # CN=1234
-        {"id": "100002", "nfc_id": "2A04D3", "token": "tok-2"},  # CN=1235
+        {"id": "100001", "token": "tok-1", "type": "id_card"},  # CN=1234
+        {"id": "100002", "token": "tok-2", "type": "id_card"},  # CN=1235
     ]
     httpx_mock.add_response(
         method="GET",
         url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
         json=_users_page([row]),
+    )
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_card_tokens_page([(1234, "tok-1"), (1235, "tok-2")]),
     )
     with caplog.at_level(logging.WARNING, logger="door_sync.unifi.client"):
         client = make_client()
@@ -1741,7 +1829,7 @@ def test_apply_create_includes_user_email_when_set(
     httpx_mock.add_response(
         method="GET",
         url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
-        json=_cards_page([{"nfc_id": "2A04D2", "token": "tok-1234"}]),
+        json=_card_tokens_page([(1234, "tok-1234")]),
     )
     httpx_mock.add_response(
         method="POST",
@@ -1799,7 +1887,7 @@ def test_apply_create_omits_user_email_when_none(
     httpx_mock.add_response(
         method="GET",
         url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
-        json=_cards_page([{"nfc_id": "2A04D2", "token": "tok-1234"}]),
+        json=_card_tokens_page([(1234, "tok-1234")]),
     )
     httpx_mock.add_response(
         method="POST",
@@ -1845,17 +1933,24 @@ def test_apply_update_credential_email_only(
 
     httpx_mock.add_response(
         method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_card_tokens_page([(1234, "tok-1234")]),
+    )
+    httpx_mock.add_response(
+        method="GET",
         url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
         json=_users_page(
-            [_user_row(contact_id=42, user_id="uuid-42", user_email="old@example.com")]
+            [
+                _user_row(
+                    contact_id=42,
+                    user_id="uuid-42",
+                    user_email="old@example.com",
+                    nfc_token="tok-1234",
+                )
+            ]
         ),
     )
     fetched = client.fetch_users()
-    httpx_mock.add_response(
-        method="GET",
-        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
-        json=_cards_page([{"nfc_id": "2A04D2", "token": "tok-1234"}]),
-    )
     httpx_mock.add_response(
         method="PUT",
         url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42",
@@ -1895,17 +1990,24 @@ def test_apply_update_credential_email_cleared_to_none(
 
     httpx_mock.add_response(
         method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_card_tokens_page([(1234, "tok-1234")]),
+    )
+    httpx_mock.add_response(
+        method="GET",
         url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
         json=_users_page(
-            [_user_row(contact_id=42, user_id="uuid-42", user_email="old@example.com")]
+            [
+                _user_row(
+                    contact_id=42,
+                    user_id="uuid-42",
+                    user_email="old@example.com",
+                    nfc_token="tok-1234",
+                )
+            ]
         ),
     )
     fetched = client.fetch_users()
-    httpx_mock.add_response(
-        method="GET",
-        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
-        json=_cards_page([{"nfc_id": "2A04D2", "token": "tok-1234"}]),
-    )
     httpx_mock.add_response(
         method="PUT",
         url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42",
@@ -1944,6 +2046,11 @@ def test_apply_update_credential_name_and_email_single_put(
 
     httpx_mock.add_response(
         method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_card_tokens_page([(1234, "tok-1234")]),
+    )
+    httpx_mock.add_response(
+        method="GET",
         url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
         json=_users_page(
             [
@@ -1953,16 +2060,12 @@ def test_apply_update_credential_name_and_email_single_put(
                     first_name="Old",
                     last_name="Name",
                     user_email="old@example.com",
+                    nfc_token="tok-1234",
                 )
             ]
         ),
     )
     fetched = client.fetch_users()
-    httpx_mock.add_response(
-        method="GET",
-        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
-        json=_cards_page([{"nfc_id": "2A04D2", "token": "tok-1234"}]),
-    )
     httpx_mock.add_response(
         method="PUT",
         url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42",
@@ -2006,7 +2109,7 @@ def test_apply_dry_run_logs_would_import_for_unknown_cards(
     httpx_mock.add_response(
         method="GET",
         url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
-        json=_cards_page([{"nfc_id": _compute_nfc_id(42, 9998), "token": "tok-9998"}]),
+        json=_card_tokens_page([(9998, "tok-9998")]),
     )
 
     diff = _diff(to_add=(_resolved(1, card_id=9998), _resolved(2, card_id=9999)))
@@ -2026,6 +2129,13 @@ def test_apply_reactivate_includes_user_email_when_set(
     monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
     client = make_client()
 
+    # Token-map fetch (card already known). Registered before fetch_users()
+    # because fetch resolves card numbers from tokens.
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_card_tokens_page([(1234, "tok-1234")]),
+    )
     # Fetch returns user 42 inactive with the same card.
     httpx_mock.add_response(
         method="GET",
@@ -2036,7 +2146,6 @@ def test_apply_reactivate_includes_user_email_when_set(
                     contact_id=42,
                     user_id="uuid-42",
                     status="DEACTIVATED",
-                    nfc_id="2A04D2",
                     nfc_token="tok-1234",
                 )
             ]
@@ -2044,12 +2153,6 @@ def test_apply_reactivate_includes_user_email_when_set(
     )
     client.fetch_users()
 
-    # Token-map fetch (card already known).
-    httpx_mock.add_response(
-        method="GET",
-        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
-        json=_cards_page([{"nfc_id": "2A04D2", "token": "tok-1234"}]),
-    )
     # PUT profile (still deactivated), then PUT activate.
     httpx_mock.add_response(
         method="PUT",
@@ -2281,6 +2384,14 @@ def test_apply_update_credential_removes_card(
     monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
     client = make_client()
 
+    # Token-map fetch (preimport runs because to_update_credential is non-empty;
+    # the resolved member has no card so no import is needed). Registered before
+    # fetch_users() because fetch resolves card numbers from tokens.
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_card_tokens_page([(1234, "tok-1234")]),
+    )
     httpx_mock.add_response(
         method="GET",
         url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
@@ -2289,7 +2400,6 @@ def test_apply_update_credential_removes_card(
                 _user_row(
                     contact_id=42,
                     user_id="uuid-42",
-                    nfc_id="2A04D2",
                     nfc_token="tok-1234",
                 )
             ]
@@ -2297,13 +2407,6 @@ def test_apply_update_credential_removes_card(
     )
     fetched = client.fetch_users()
 
-    # Token-map fetch (preimport runs because to_update_credential is non-empty;
-    # the resolved member has no card so no import is needed).
-    httpx_mock.add_response(
-        method="GET",
-        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
-        json=_cards_page([{"nfc_id": "2A04D2", "token": "tok-1234"}]),
-    )
     # DELETE old card.
     httpx_mock.add_response(
         method="DELETE",

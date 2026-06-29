@@ -30,6 +30,10 @@ _UNIFI_PORT = 12445
 _MAX_ATTEMPTS = 3
 _MAX_PAGES = 1_000
 _PAGE_SIZE = 100
+# Alias door-sync stamps on every card it imports, encoding the card number.
+# The /users and card-list endpoints expose `alias`/`token` but not the raw
+# Wiegand `nfc_id`, so this alias is how a card maps back to its number.
+_SYNC_ALIAS_PREFIX = "sync-"
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +91,10 @@ class UnifiClient:
         self._unifi_user_id_by_contact: dict[int, str] = {}
         self._nfc_cards_by_contact: dict[int, list[dict[str, Any]]] = {}
         self._nfc_token_map: dict[int, str] | None = None
+        # Reverse of the token map: a card's `token` (the only stable card
+        # identifier the /users endpoint exposes) -> its card number. Populated
+        # alongside `_nfc_token_map` so reads can resolve a user's card.
+        self._card_id_by_token: dict[str, int] = {}
         self._fetched_users_done = False
 
     def _verify_tls_fingerprint(self) -> None:
@@ -302,13 +310,18 @@ class UnifiClient:
                 len(nfc_cards),
             )
         if nfc_cards:
-            nfc_id_raw = str(nfc_cards[0].get("nfc_id", ""))
-            card_id = _parse_nfc_id(nfc_id_raw, self._config.facility_code)
-            if card_id is None and nfc_id_raw:
-                logger.warning(
-                    "contact %d has foreign-FC card; treating as no card",
-                    contact_id,
-                )
+            # The /users endpoint exposes a card's `token` and display `id`, but
+            # NOT its Wiegand `nfc_id`. Recover the card number by joining the
+            # token to the door-sync-managed card list (keyed by sync- alias).
+            token = str(nfc_cards[0].get("token", ""))
+            if token:
+                self._ensure_nfc_token_map()
+                card_id = self._card_id_by_token.get(token)
+                if card_id is None:
+                    logger.debug(
+                        "contact %d has an unrecognized NFC card; treating as no card",
+                        contact_id,
+                    )
 
         raw_policies = row.get("access_policy_ids") or []
         if not isinstance(raw_policies, list):
@@ -558,6 +571,12 @@ class UnifiClient:
     def _ensure_nfc_token_map(self) -> dict[int, str]:
         """Load and cache a mapping of NFC card IDs to tokens from the UniFi API.
 
+        The card-list endpoint exposes each card's `alias` and `token` but not
+        its raw Wiegand `nfc_id`, so the card number is recovered from the
+        door-sync import alias (`sync-<card_id>`). Cards without that alias are
+        not door-sync-managed and are skipped. The reverse `token -> card_id`
+        map is populated here too so user reads can resolve a card by token.
+
         Returns:
             Mapping from NFC card numeric ID to token string.
 
@@ -579,17 +598,12 @@ class UnifiClient:
                     f"expected list of cards from /nfc_cards/tokens, got {type(data).__name__}"
                 )
             for row in data:
-                nfc_id = str(row.get("nfc_id", ""))
                 token = str(row.get("token", ""))
-                if not nfc_id or not token:
-                    continue
-                card_id = _parse_nfc_id(nfc_id, self._config.facility_code)
-                if card_id is None:
-                    logger.debug(
-                        "skipping foreign-FC or unparseable card",
-                    )
+                card_id = _parse_sync_alias(str(row.get("alias", "")))
+                if not token or card_id is None:
                     continue
                 token_map[card_id] = token
+                self._card_id_by_token[token] = card_id
             if len(data) < _PAGE_SIZE:
                 break
         else:
@@ -613,7 +627,7 @@ class UnifiClient:
         lines: list[str] = []
         for card_id in card_ids:
             nfc_id = _compute_nfc_id(self._config.facility_code, card_id)
-            alias = f"sync-{card_id:05d}"
+            alias = f"{_SYNC_ALIAS_PREFIX}{card_id:05d}"
             lines.append(f"{nfc_id},{alias}")
         csv_bytes = ("\n".join(lines) + "\n").encode("utf-8")
         data = self._request(
@@ -646,6 +660,7 @@ class UnifiClient:
                     f"card import failed for card_id={_redact(parsed_card_id)} (empty token in response)"
                 )
             token_map[parsed_card_id] = token
+            self._card_id_by_token[token] = parsed_card_id
 
     def _apply_add(self, diff: Diff) -> None:
         """Create or reactivate UniFi users for each member in `diff.to_add`.
@@ -853,6 +868,28 @@ def _parse_nfc_id(nfc_id: str, expected_facility_code: int) -> int | None:
     if fc != expected_facility_code:
         return None
     return cn
+
+
+def _parse_sync_alias(alias: str) -> int | None:
+    """Recover the card number door-sync encoded in an import alias.
+
+    door-sync imports every card with alias ``sync-<card_id>`` (zero-padded,
+    see ``_import_cards``). The UniFi card-list and /users endpoints return a
+    card's ``alias`` and ``token`` but not the raw Wiegand ``nfc_id``, so the
+    alias is the only way to map a card back to its number on read.
+
+    Args:
+        alias: The card's alias string from a UniFi response.
+
+    Returns:
+        The card_id, or None if `alias` is not a door-sync alias.
+    """
+    if not alias.startswith(_SYNC_ALIAS_PREFIX):
+        return None
+    try:
+        return int(alias[len(_SYNC_ALIAS_PREFIX) :])
+    except ValueError:
+        return None
 
 
 def _email_differs_ci(a: str | None, b: str | None) -> bool:
