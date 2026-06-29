@@ -20,6 +20,7 @@ from door_sync.unifi.client import (
     UnifiClient,
     UnifiClientError,
     _compute_nfc_id,
+    _format_apply_failure_summary,
     _is_email_conflict,
     _parse_nfc_id,
     _parse_sync_alias,
@@ -104,6 +105,25 @@ def test_is_email_conflict_matches_email_exist_codes() -> None:
     assert _is_email_conflict("CODE_RESOURCE_NOT_FOUND") is False
     assert _is_email_conflict(None) is False
     assert _is_email_conflict("") is False
+
+
+# --- apply-failure summary ---
+
+
+def test_format_apply_failure_summary_caps_detail() -> None:
+    """A widespread failure caps the detailed entries with '...and N more' so
+    the summary (and any alert built from it) stays bounded."""
+    fails = [f"contact={i}: err" for i in range(1, 13)]  # 12 failures
+    msg = _format_apply_failure_summary(fails, max_detail=10)
+    assert msg.startswith("12 user update(s) failed this cycle: ")
+    assert msg.count("contact=") == 10  # only 10 detailed
+    assert "...and 2 more" in msg
+
+
+def test_format_apply_failure_summary_no_truncation_when_under_cap() -> None:
+    msg = _format_apply_failure_summary(["contact=1: boom"], max_detail=10)
+    assert msg == "1 user update(s) failed this cycle: contact=1: boom"
+    assert "more" not in msg
 
 
 # --- Name splitting ---

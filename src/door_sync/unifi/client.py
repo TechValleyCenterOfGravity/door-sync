@@ -30,6 +30,9 @@ _UNIFI_PORT = 12445
 _MAX_ATTEMPTS = 3
 _MAX_PAGES = 1_000
 _PAGE_SIZE = 100
+# Cap on per-contact detail lines in an apply()-failure summary, so a
+# widespread failure doesn't produce an unbounded error/alert message.
+_MAX_FAILURE_DETAIL = 10
 # Alias door-sync stamps on every card it imports, encoding the card number.
 # Neither read endpoint returns the Wiegand `nfc_id`: /users gives each card's
 # `token` (plus a display `id`), and the card list (/credentials/nfc_cards/
@@ -418,10 +421,7 @@ class UnifiClient:
         self._apply_update_policy(diff)
         self._apply_add(diff)
         if self._apply_failures:
-            raise UnifiClientError(
-                f"{len(self._apply_failures)} user update(s) failed this cycle: "
-                + "; ".join(self._apply_failures)
-            )
+            raise UnifiClientError(_format_apply_failure_summary(self._apply_failures))
 
     _INTER_CALL_DELAY_SECONDS = 0.075
 
@@ -432,7 +432,7 @@ class UnifiClient:
             contact_id: The contact whose update failed.
             exc: The API error raised for that contact.
         """
-        logger.error("apply failed for contact=%d: %s", contact_id, exc)
+        logger.error("apply failed for contact=%d: %s", contact_id, exc, exc_info=exc)
         self._apply_failures.append(f"contact={contact_id}: {exc}")
 
     def _request_user_write(
@@ -471,6 +471,9 @@ class UnifiClient:
             retry_body = {k: v for k, v in body.items() if k != "user_email"}
             if not retry_body:
                 return None
+            # Keep the retry on the same inter-call pacing as other writes so a
+            # burst of EMAIL_EXIST conflicts doesn't fire back-to-back requests.
+            time.sleep(self._INTER_CALL_DELAY_SECONDS)
             return self._request(method, path, json=retry_body)
 
     def _apply_update_credential(self, diff: Diff) -> None:
@@ -984,6 +987,29 @@ def _parse_nfc_id(nfc_id: str, expected_facility_code: int) -> int | None:
     if fc != expected_facility_code:
         return None
     return cn
+
+
+def _format_apply_failure_summary(
+    failures: list[str], *, max_detail: int = _MAX_FAILURE_DETAIL
+) -> str:
+    """Build the summary message for per-contact apply failures.
+
+    Caps the detail at `max_detail` entries and appends "...and N more" so the
+    message (and any alert derived from it) stays bounded under a widespread
+    failure.
+
+    Args:
+        failures: Per-contact failure detail strings.
+        max_detail: Maximum number of detail entries to include verbatim.
+
+    Returns:
+        A single-line summary suitable for a UnifiClientError message.
+    """
+    n = len(failures)
+    detail = "; ".join(failures[:max_detail])
+    if n > max_detail:
+        detail += f"; ...and {n - max_detail} more"
+    return f"{n} user update(s) failed this cycle: {detail}"
 
 
 def _is_email_conflict(code: str | None) -> bool:
