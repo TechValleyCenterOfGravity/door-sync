@@ -6,6 +6,19 @@
 
 ---
 
+> **Correction (2026-06-29) — read path no longer uses `nfc_id`; supersedes §8, §9, §10's read claims, and §11.**
+>
+> §10 below states "UniFi exposes `nfc_id` on each card record." That is **only true of the `POST /credentials/nfc_cards/import` response.** The read endpoints do **not** return `nfc_id`:
+> - `GET /users` → each `nfc_cards[]` entry is `{id (display), token, type}`.
+> - `GET /credentials/nfc_cards/tokens` → each card is `{display_id, alias, token, ...}`.
+>
+> Because the original code read `nfc_cards[0]["nfc_id"]` from `/users` (and `nfc_id` from the card list), every read produced `card_id=None` and the token map was always empty. Current behavior:
+> - A card's number is recovered from the door-sync import **alias** `sync-<card_id>` (`_parse_sync_alias`), joined to users by **`token`**. `_ensure_nfc_token_map()` builds both `{card_id → token}` and the reverse `{token → card_id}`, keyed off `alias`; `fetch_users()` loads it to resolve each user's `card_id`. Only door-sync-imported cards (which carry the alias) are recognized; everything else resolves to `card_id=None`. The §10 `_compute_nfc_id`/`_parse_nfc_id` helpers and the FC-mismatch behavior in §10 now apply **only to the import path** (CSV upload + import-response parsing), not to user/card reads.
+>
+> §11's access-policy handling ("take the first of `access_policy_ids`") was also revised: `UnifiClient` now takes `managed_policy_ids` (the `tier_mapping` target policies). It ignores any policy not in that set on read (so a policy UniFi auto-applies to all users is not mistaken for tier drift) and sends only the tier policy on write. See `docs/architecture.md` §7 and §8 for the current contracts.
+
+---
+
 ## 1. Goal
 
 Implement the read+write UniFi Access client that the orchestrator calls once per reconcile cycle:
