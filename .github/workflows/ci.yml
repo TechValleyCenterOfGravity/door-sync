@@ -52,6 +52,7 @@ jobs:
         fail-on-error: false   # coverage upload is best-effort; don't gate the build on it
     - name: Job summary
       if: always()
+      continue-on-error: true
       run: |
         gate() {  # $1 = label, $2 = step outcome
           case "$2" in
