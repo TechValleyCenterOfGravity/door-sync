@@ -22,6 +22,7 @@ build-backend = "uv_build"
 dev = [
     "pyrefly>=1.1.1",
     "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
     "pytest-httpx>=0.30",
     "ruff>=0.15.20",
     "sphinx>=9.0.4",
@@ -62,3 +63,10 @@ project-includes = [
 search-path = ["src"]
 python-version = "3.11.0"
 preset = "legacy"
+
+[tool.coverage.run]
+source = ["door_sync"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true

@@ -8,6 +8,8 @@ on:
  
 permissions:
   contents: read
+  code-quality: write   # for actions/upload-code-coverage (GitHub-native coverage API)
+  pull-requests: read   # lets the action associate coverage with the PR on push events
  
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -34,4 +36,11 @@ jobs:
     - name: Type check
       run: uv run pyrefly check --output-format=github
     - name: Test
-      run: uv run pytest
+      run: uv run pytest --cov --cov-report=xml --cov-report=term-missing
+    - name: Upload coverage to GitHub
+      uses: actions/upload-code-coverage@abb5995db9e0199b0e2bb9dbd136fce4cb1ec4d3 # v1.3.0
+      with:
+        file: coverage.xml
+        language: Python
+        label: code-coverage/pytest
+        fail-on-error: false   # coverage upload is best-effort; don't gate the build on it
