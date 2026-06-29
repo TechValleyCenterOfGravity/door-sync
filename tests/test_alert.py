@@ -116,10 +116,12 @@ def test_raise_mailgun_sends_post(tmp_path: Path) -> None:
     cfg = AlertConfig(transport="mailgun", smtp=None, mailgun=_mailgun_config())
 
     with patch("door_sync.alert.httpx.post") as mock_post:
-        mock_post.return_value.raise_for_status = lambda: None
         alert.raise_("safety halt", path=path, alert_config=cfg)
 
     mock_post.assert_called_once()
+    # The Mailgun response status must be checked (a 4xx/5xx should surface as a
+    # send failure, not a silent success).
+    mock_post.return_value.raise_for_status.assert_called_once()
     call_kwargs = mock_post.call_args
     # Assert the exact Mailgun endpoint, not a loose substring: the domain must
     # sit in the API path (https://api.mailgun.net/v3/<domain>/messages), which
@@ -137,10 +139,10 @@ def test_clear_mailgun_sends_resolved(tmp_path: Path) -> None:
     cfg = AlertConfig(transport="mailgun", smtp=None, mailgun=_mailgun_config())
 
     with patch("door_sync.alert.httpx.post") as mock_post:
-        mock_post.return_value.raise_for_status = lambda: None
         alert.clear(path=path, alert_config=cfg)
 
     mock_post.assert_called_once()
+    mock_post.return_value.raise_for_status.assert_called_once()
     assert mock_post.call_args.kwargs["data"]["subject"] == "[door-sync] RESOLVED"
     assert not path.exists()
 
@@ -183,9 +185,11 @@ def test_raise_smtp_sends_email(tmp_path: Path) -> None:
     cfg = AlertConfig(transport="smtp", smtp=_smtp_config(), mailgun=None)
 
     with patch("door_sync.alert.smtplib.SMTP") as mock_cls:
+        # mock_cls.return_value is a MagicMock, which already supports the
+        # context-manager protocol (and __exit__ returns False, so it won't
+        # swallow exceptions). _send_smtp uses `with server:` (no `as`), so no
+        # __enter__/__exit__ setup is needed.
         mock_server = mock_cls.return_value
-        mock_server.__enter__ = lambda s: s
-        mock_server.__exit__ = lambda s, *a: None
         alert.raise_("safety halt", path=path, alert_config=cfg)
 
     mock_server.starttls.assert_called_once()
@@ -202,9 +206,11 @@ def test_clear_smtp_sends_resolved(tmp_path: Path) -> None:
     cfg = AlertConfig(transport="smtp", smtp=_smtp_config(), mailgun=None)
 
     with patch("door_sync.alert.smtplib.SMTP") as mock_cls:
+        # mock_cls.return_value is a MagicMock, which already supports the
+        # context-manager protocol (and __exit__ returns False, so it won't
+        # swallow exceptions). _send_smtp uses `with server:` (no `as`), so no
+        # __enter__/__exit__ setup is needed.
         mock_server = mock_cls.return_value
-        mock_server.__enter__ = lambda s: s
-        mock_server.__exit__ = lambda s, *a: None
         alert.clear(path=path, alert_config=cfg)
 
     msg = mock_server.send_message.call_args.args[0]
@@ -247,9 +253,11 @@ def test_smtp_ssl_used_when_starttls_false(tmp_path: Path) -> None:
     cfg = AlertConfig(transport="smtp", smtp=smtp_cfg, mailgun=None)
 
     with patch("door_sync.alert.smtplib.SMTP_SSL") as mock_cls:
+        # mock_cls.return_value is a MagicMock, which already supports the
+        # context-manager protocol (and __exit__ returns False, so it won't
+        # swallow exceptions). _send_smtp uses `with server:` (no `as`), so no
+        # __enter__/__exit__ setup is needed.
         mock_server = mock_cls.return_value
-        mock_server.__enter__ = lambda s: s
-        mock_server.__exit__ = lambda s, *a: None
         alert.raise_("reason", path=path, alert_config=cfg)
 
     mock_cls.assert_called_once()
