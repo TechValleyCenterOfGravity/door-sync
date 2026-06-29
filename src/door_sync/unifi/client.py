@@ -31,8 +31,10 @@ _MAX_ATTEMPTS = 3
 _MAX_PAGES = 1_000
 _PAGE_SIZE = 100
 # Alias door-sync stamps on every card it imports, encoding the card number.
-# The /users and card-list endpoints expose `alias`/`token` but not the raw
-# Wiegand `nfc_id`, so this alias is how a card maps back to its number.
+# Neither read endpoint returns the Wiegand `nfc_id`: /users gives each card's
+# `token` (plus a display `id`), and the card list (/credentials/nfc_cards/
+# tokens) gives `alias` + `token`. A user's card is mapped to its number by
+# joining on `token` and reading the number out of this alias.
 _SYNC_ALIAS_PREFIX = "sync-"
 
 logger = logging.getLogger(__name__)
@@ -66,9 +68,13 @@ class UnifiClient:
                 tier-mapping target policies). When provided, any policy on a
                 UniFi user that is not in this set is treated as externally
                 managed (e.g. a policy auto-applied to all users): it is ignored
-                when reading the user's current policy and preserved on write.
-                When None/empty, every policy is treated as managed (legacy
-                behavior: take the first).
+                when reading the user's current policy, and policy writes send
+                only the tier policy. An auto-applied policy is therefore left
+                for UniFi to re-apply rather than re-sent (which would convert it
+                into a manual per-user assignment); door-sync does not otherwise
+                preserve arbitrary unmanaged per-user policies on write. When
+                None/empty, every policy is treated as managed (legacy behavior:
+                take the first).
         """
         self._config = config
         self._dry_run = dry_run
