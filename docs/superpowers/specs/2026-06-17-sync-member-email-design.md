@@ -7,7 +7,18 @@ provisioned and kept in sync on the UniFi Access user record.
 
 ---
 
-## 1. Motivation
+> **Correction (2026-06-29) — email writes are best-effort.**
+>
+> This spec describes writing `user_email` on create/reactivate/update (§3.5)
+> but did not account for UniFi's constraint that **emails are globally unique
+> across users *and* admins**. In production this surfaced as a
+> `CODE_ADMIN_EMAIL_EXIST` crash for members who are also UniFi admins. The
+> implemented behavior: a write rejected with an `*_EMAIL_EXIST` code is retried
+> **without** the `user_email` field (so name/card/policy still apply) and a
+> warning is logged; the email simply isn't synced for that member, and it is
+> not treated as a cycle failure. Per-user failures during `apply()` are also
+> isolated now (one bad contact no longer halts the rest). See
+> `docs/architecture.md` §7 and `architecture/conventions.rst` "Error Handling".
 
 UniFi Access uses a user's email **functionally**: it delivers mobile
 credential invites and PIN codes to that address. Today the reconciler syncs
