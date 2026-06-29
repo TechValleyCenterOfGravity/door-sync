@@ -3,7 +3,9 @@
 import hashlib
 import json as _json
 import logging
+import ssl
 from collections.abc import Callable, Iterator
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -12,7 +14,7 @@ import httpx
 import pytest
 from pytest_httpx import HTTPXMock
 
-from door_sync.config import UnifiConfig
+from door_sync.config import UnifiConfig, load
 from door_sync.models import Diff, ResolvedMember, UnifiUser
 from door_sync.unifi.client import (
     UnifiClient,
@@ -84,7 +86,10 @@ def test_parse_sync_alias_rejects_non_digit_suffix() -> None:
     assert _parse_sync_alias("sync-+5") is None
     assert _parse_sync_alias("sync- 12") is None  # whitespace-padded
     assert _parse_sync_alias("sync-1_234") is None  # underscore digit grouping
-    assert _parse_sync_alias("sync-²") is None  # superscript two (unicode digit)
+    # Non-ASCII digits (str.isdigit() is True for these) must be rejected by the
+    # isascii() guard: a superscript and a regular non-ASCII decimal digit.
+    assert _parse_sync_alias("sync-²") is None  # U+00B2 superscript two
+    assert _parse_sync_alias("sync-১") is None  # U+09E7 Bengali digit one
 
 
 # --- Name splitting ---
@@ -161,7 +166,12 @@ def _patched_tls(cert_der: bytes) -> Any:
         "door_sync.unifi.client",
         socket=MagicMock(create_connection=MagicMock(return_value=mock_sock)),
         ssl=MagicMock(
-            SSLContext=MagicMock(return_value=mock_ctx), CERT_NONE=0, PROTOCOL_TLS_CLIENT=0
+            SSLContext=MagicMock(return_value=mock_ctx),
+            # Use the real ssl constants so the stub matches production values
+            # (e.g. PROTOCOL_TLS_CLIENT is 2, not 0) rather than magic numbers.
+            CERT_NONE=ssl.CERT_NONE,
+            PROTOCOL_TLS_CLIENT=ssl.PROTOCOL_TLS_CLIENT,
+            TLSVersion=ssl.TLSVersion,
         ),
     )
 
@@ -1006,8 +1016,9 @@ def test_import_cards_fc_mismatch_in_response_does_not_leak_card_number(
         client._import_cards([1234])
     message = str(exc_info.value)
     # FC bytes are operational, not credential material — present.
+    # facility_code 42 (from the test config) must be named as the expected FC.
     assert "got FC 89" in message
-    assert f"expected {42}" in message
+    assert "expected 42" in message
     # The raw nfc_id and the card-number portion must NOT appear.
     assert "5904D2" not in message
     assert "1234" not in message
@@ -1791,10 +1802,6 @@ def test_unifi_client_constructs_from_loaded_config(
     This catches the regression where config.host was validated as a full URL
     but the client was treating it as a bare hostname.
     """
-    from dataclasses import replace
-
-    from door_sync.config import load
-
     repo_root = Path(__file__).parent.parent
 
     env_path = tmp_path / "env"
