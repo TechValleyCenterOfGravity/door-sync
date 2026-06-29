@@ -54,6 +54,28 @@ def resolve(member: CiviMember, mapping: TierMapping) -> ResolvedMember:
     )
 
 
+def managed_policy_ids(mapping: TierMapping) -> frozenset[str]:
+    """Collect the set of access policy IDs door-sync manages.
+
+    These are every tier rule's ``target_policy``; ``none``/``day-pass`` rules
+    carry no policy. The UniFi client uses this set to distinguish the policy it
+    assigned from policies applied externally (e.g. a policy auto-applied to all
+    users), so the latter are neither mistaken for a tier change nor stripped on
+    write.
+
+    Args:
+        mapping: Tier-mapping rules from configuration.
+
+    Returns:
+        The frozenset of managed (tier) policy IDs.
+    """
+    return frozenset(
+        rule.target_policy
+        for rule in mapping.rules.values()
+        if rule.resolution == "tier" and rule.target_policy is not None
+    )
+
+
 def resolve_all(members: list[CiviMember], mapping: TierMapping) -> list[ResolvedMember]:
     """Resolve all members in a batch.
 

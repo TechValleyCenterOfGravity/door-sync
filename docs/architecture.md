@@ -243,6 +243,8 @@ config.load()
    - `unmapped` → halt signal; recorded in `Diff.unmapped`
    - Highest-wins rule when a contact has multiple active memberships at different tiers (design guide §6).
 3. **Pull from UniFi** — all users with `employee_number` populated (sync-managed). Users without `employee_number` are admin-created and ignored by the reconciler.
+
+   **Card identity (read path):** UniFi's `/users` response exposes each card's opaque `token` and a display `id` — *not* the Wiegand `nfc_id`. (Only the `/credentials/nfc_cards/import` response returns `nfc_id`; the `/users` and card-list reads do not.) door-sync recovers a card's number by matching the `token` against the card list (`/credentials/nfc_cards/tokens`), whose `alias` it stamps as `sync-<card_id>` at import time. Only cards door-sync imported carry that alias; cards enrolled by other means resolve to `card_id=None` and are treated as no managed card. `fetch_users()` loads the token map to perform this resolution.
 4. **Compute diff** — see §8.
 5. **Safety check** — see §9.
 6. **Apply diff** — `unifi.apply(diff)` iterates the diff sets serially with a 50-100ms inter-call delay. Each action retried per design guide §8 (exponential backoff, honor `Retry-After` on 429). Failures partway through are tolerable: idempotency means the next cycle resumes correctly.
@@ -276,6 +278,10 @@ Index both lists by `contact_id`. For each `contact_id` present in either:
 | not present in resolved | present, inactive *or* not present | (no-op) |
 
 A contact may appear in both `to_update_credential` and `to_update_policy` in the same diff if both changed. Both updates are applied.
+
+**Access policies (managed vs. external):** UniFi can auto-apply a policy to *all* users; such a policy then appears on every user's `access_policy_ids`. door-sync manages only the tier policies declared in `tier_mapping` — the set returned by `tier_mapping.managed_policy_ids()`, passed into `UnifiClient`. On read it ignores any unmanaged policy (so an auto-applied global policy is never mistaken for tier drift, which would otherwise queue every user into `to_update_policy` and trip the mass-policy guard). On write it sends *only* the tier policy — re-sending the global ID through the per-user endpoint would convert it into a manual per-user assignment.
+
+Backward compatibility: the `managed_policy_ids` argument is optional. Omitting it (passing `None`) selects the legacy fallback — every policy is treated as managed and the first is taken — which is how callers that predate the managed set behave. An *explicit* set (including an empty one) is authoritative; an empty set means door-sync owns no policies, so all are treated as external. The orchestrator and CLI always pass the derived set, so production runs are never on the legacy path.
 
 **Idempotency canary:** running `compute_diff` immediately after a successful `unifi.apply()` must produce a `Diff` with all empty sets. This is the canonical test for the algorithm — include it in the test suite.
 
@@ -318,7 +324,11 @@ The single entry point to a reconciliation cycle:
 ```python
 def reconcile(config: Config, *, dry_run: bool) -> ReconcileResult:
     civicrm = CivicrmClient(config.civicrm)
-    unifi = UnifiClient(config.unifi, dry_run=dry_run)
+    unifi = UnifiClient(
+        config.unifi,
+        dry_run=dry_run,
+        managed_policy_ids=tier_mapping.managed_policy_ids(config.tier_mapping),
+    )
     paths = config.ops_paths
 
     civi_members = civicrm.fetch_active()

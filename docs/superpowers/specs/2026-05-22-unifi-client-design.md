@@ -6,6 +6,19 @@
 
 ---
 
+> **Correction (2026-06-29) — read path no longer uses `nfc_id`; supersedes §8, §9, §10's read claims, and §11.**
+>
+> §10 below states "UniFi exposes `nfc_id` on each card record." That is **only true of the `POST /credentials/nfc_cards/import` response.** The read endpoints do **not** return `nfc_id`:
+> - `GET /users` → each `nfc_cards[]` entry is `{id (display), token, type}`.
+> - `GET /credentials/nfc_cards/tokens` → each card is `{display_id, alias, token, ...}`.
+>
+> Because the original code read `nfc_cards[0]["nfc_id"]` from `/users` (and `nfc_id` from the card list), every read produced `card_id=None` and the token map was always empty. Current behavior:
+> - A card's number is recovered from the door-sync import **alias** `sync-<card_id>` (`_parse_sync_alias`), joined to users by **`token`**. `_ensure_nfc_token_map()` builds both `{card_id → token}` and the reverse `{token → card_id}`, keyed off `alias`; `fetch_users()` loads it to resolve each user's `card_id`. Only door-sync-imported cards (which carry the alias) are recognized; everything else resolves to `card_id=None`. The §10 `_compute_nfc_id`/`_parse_nfc_id` helpers and the FC-mismatch behavior in §10 now apply **only to the import path** (CSV upload + import-response parsing), not to user/card reads.
+>
+> §11's access-policy handling ("take the first of `access_policy_ids`") was also revised: `UnifiClient` now takes `managed_policy_ids` (the `tier_mapping` target policies). It ignores any policy not in that set on read (so a policy UniFi auto-applies to all users is not mistaken for tier drift) and sends only the tier policy on write. See `docs/architecture.md` §7 and §8 for the current contracts.
+
+---
+
 ## 1. Goal
 
 Implement the read+write UniFi Access client that the orchestrator calls once per reconcile cycle:
@@ -112,9 +125,9 @@ For each row:
 - Build a `UnifiUser`:
   - `contact_id = int(employee_number)`
   - `display_name = " ".join([first_name, last_name]).strip()`
-  - `card_id = _parse_nfc_id(nfc_cards[0]["nfc_id"], config.facility_code)` — see §10; `None` if no cards, the nfc_id is unparseable, or its encoded FC differs from `config.facility_code`
+  - `card_id = _parse_nfc_id(nfc_cards[0]["nfc_id"], config.facility_code)` — see §10; `None` if no cards, the nfc_id is unparseable, or its encoded FC differs from `config.facility_code` — **[SUPERSEDED — see Correction (2026-06-29)]** `/users` cards have no `nfc_id`; `card_id` is recovered from the card `token` via the `sync-<card_id>` alias.
   - `active = status == "ACTIVE"`
-  - `policy = access_policy_ids[0]` — see §11; `None` if no policies
+  - `policy = access_policy_ids[0]` — see §11; `None` if no policies — **[SUPERSEDED — see Correction (2026-06-29)]** `policy` is now the single *managed* policy (filtered by `managed_policy_ids`), not the raw first.
 
 If a user has multiple cards or multiple policies, we use the first by `id`-ordered iteration and emit a `logger.warning("contact %d has %d cards/policies; using the first", …)` with redacted card-ID. This is operational drift the reconciler reports but does not auto-correct — the safety guards and human review handle it.
 
@@ -248,6 +261,8 @@ For matching, the reconciler compares CN integers, not hex strings — that side
 **Behavior on FC mismatch.** If a user has a card bound whose `nfc_id` decodes to a different facility code than `config.facility_code`, the reconciler treats that user as having no managed card (`UnifiUser.card_id = None`) and emits one `logger.warning("contact %d has foreign-FC card nfc_id=%s; skipping", contact_id, _redact(nfc_id))`. The next diff cycle will then try to add a card with the configured FC, which will either succeed (creating a second binding) or fail (UniFi rejects duplicates) — both outcomes are visible in the audit log. Manual intervention is the right resolution path; the reconciler does not silently rebind across facility codes.
 
 ## 11. Access policy handling
+
+> **[SUPERSEDED — see [Correction (2026-06-29)](#correction-2026-06-29--read-path-no-longer-uses-nfc_id-supersedes-8-9-10s-read-claims-and-11)].** The "use the first of `access_policy_ids`" rule below was replaced by managed-policy filtering: `UnifiClient` takes `managed_policy_ids` (the `tier_mapping` targets), reads only the managed policy (ignoring policies UniFi auto-applies to all users), and writes only the tier policy. The text below is retained for historical context.
 
 Each `ResolvedMember.target_policy` is a single string — the UniFi policy UUID. We push it as `{"access_policy_ids": [target_policy]}` (single-element list).
 

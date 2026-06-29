@@ -203,9 +203,17 @@ def test_show_diff_prints_sections_and_exits_zero(
         def __exit__(self, *_: Any) -> None:
             pass
 
+    captured_kwargs: dict[str, Any] = {}
+
     class _Unifi:
-        def __init__(self, c: UnifiConfig, *, dry_run: bool = False) -> None:
-            pass
+        def __init__(
+            self,
+            c: UnifiConfig,
+            *,
+            dry_run: bool = False,
+            managed_policy_ids: frozenset[str] | None = None,
+        ) -> None:
+            captured_kwargs["managed_policy_ids"] = managed_policy_ids
 
         def fetch_users(self) -> list[Any]:
             return []
@@ -221,6 +229,10 @@ def test_show_diff_prints_sections_and_exits_zero(
 
     rc = main_mod.main(argv=["show-diff"])
     assert rc == 0
+
+    # show-diff must forward the tier policies as the managed set (cfg maps
+    # "Gold" -> "p1"), so an auto-applied global policy isn't read as drift.
+    assert captured_kwargs["managed_policy_ids"] == frozenset({"p1"})
 
     captured = capsys.readouterr()
     assert "=== ADD (0) ===" in captured.out

@@ -147,11 +147,23 @@ The API key is read from the ``CIVICRM_API_KEY`` env variable (see above).
    tls_fingerprint = "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89"
 
    # Wiegand-26 facility code (0-255). Must match the facility code
-   # programmed into your NFC card stock. Used to encode and decode
-   # the nfc_id values that the UniFi API expects.
+   # programmed into your NFC card stock. Used to encode the nfc_id
+   # values door-sync writes when importing cards (and to decode the
+   # nfc_id the import response returns).
    facility_code = 42
 
 The API key is read from the ``UNIFI_API_KEY`` env variable.
+
+.. note::
+
+   door-sync recognizes only the NFC cards it imported itself. On import it
+   stamps each card with the alias ``sync-<card_id>``; because the UniFi read
+   endpoints expose a card's ``token`` and display ``id`` but not its Wiegand
+   ``nfc_id``, door-sync recovers a card's number from that alias. Cards
+   enrolled manually in the UniFi UI (or by another tool) lack the alias and
+   are treated as "no managed card" — the reconciler will then try to provision
+   the member's configured card alongside the manual one. Keep member cards
+   under door-sync's import path to avoid surprises.
 
 
 ``[safety]`` — Safety Guard Thresholds
@@ -240,6 +252,15 @@ Each rule has three fields:
    Every active CiviCRM membership type must have a corresponding rule. If a
    member has a type with no matching rule, the safety guard will halt the
    cycle with an "unmapped types" error.
+
+.. note::
+
+   door-sync manages only the ``target_policy`` IDs declared here. A policy you
+   configure in UniFi to apply automatically to *all* users is left untouched:
+   on read it is ignored (so it is not mistaken for a tier change — which would
+   otherwise queue every user for a policy update and trip the mass-policy
+   safety guard), and on write only the tier policy is sent. You can safely add
+   such global/auto-applied policies in UniFi without disrupting reconciliation.
 
 
 ``[ops]`` — Operational File Paths

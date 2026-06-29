@@ -60,7 +60,11 @@ def reconcile(config: Config, *, dry_run: bool) -> ReconcileResult:
 
     with (
         CivicrmClient(config.civicrm) as civicrm,
-        UnifiClient(config.unifi, dry_run=dry_run) as unifi,
+        UnifiClient(
+            config.unifi,
+            dry_run=dry_run,
+            managed_policy_ids=tier_mapping.managed_policy_ids(config.tier_mapping),
+        ) as unifi,
     ):
         civi_members = civicrm.fetch_active()
         resolved = [tier_mapping.resolve(m, config.tier_mapping) for m in civi_members]

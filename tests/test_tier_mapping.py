@@ -1,5 +1,5 @@
 from door_sync.models import CiviMember, ResolvedMember, TierMapping, TierRule
-from door_sync.tier_mapping import resolve, resolve_all
+from door_sync.tier_mapping import managed_policy_ids, resolve, resolve_all
 
 
 def _civi(types: tuple[str, ...], email: str | None = "m@example.com") -> CiviMember:
@@ -145,3 +145,44 @@ def test_email_none_passes_through() -> None:
     )
     result = resolve(_civi(("Gold",), email=None), mapping)
     assert result.email is None
+
+
+# --- managed_policy_ids ---
+
+
+def test_managed_policy_ids_collects_tier_targets() -> None:
+    """The managed set is every tier rule's target_policy."""
+    mapping = TierMapping(
+        rules={
+            "Gold": TierRule(resolution="tier", target_policy="P_GOLD", rank=10),
+            "Silver": TierRule(resolution="tier", target_policy="P_SILVER", rank=5),
+        }
+    )
+    assert managed_policy_ids(mapping) == frozenset({"P_GOLD", "P_SILVER"})
+
+
+def test_managed_policy_ids_excludes_none_and_nontier() -> None:
+    """none/day-pass rules (target_policy=None) contribute nothing."""
+    mapping = TierMapping(
+        rules={
+            "Gold": TierRule(resolution="tier", target_policy="P_GOLD", rank=10),
+            "Comp": TierRule(resolution="none", target_policy=None, rank=1),
+            "DayPass": TierRule(resolution="day-pass", target_policy=None, rank=1),
+        }
+    )
+    assert managed_policy_ids(mapping) == frozenset({"P_GOLD"})
+
+
+def test_managed_policy_ids_dedupes_shared_targets() -> None:
+    """Two tiers pointing at the same policy collapse to one entry."""
+    mapping = TierMapping(
+        rules={
+            "Gold": TierRule(resolution="tier", target_policy="P_SHARED", rank=10),
+            "Plat": TierRule(resolution="tier", target_policy="P_SHARED", rank=20),
+        }
+    )
+    assert managed_policy_ids(mapping) == frozenset({"P_SHARED"})
+
+
+def test_managed_policy_ids_empty_mapping() -> None:
+    assert managed_policy_ids(TierMapping(rules={})) == frozenset()
