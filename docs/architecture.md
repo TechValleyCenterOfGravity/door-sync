@@ -248,6 +248,10 @@ config.load()
 4. **Compute diff** — see §8.
 5. **Safety check** — see §9.
 6. **Apply diff** — `unifi.apply(diff)` iterates the diff sets serially with a 50-100ms inter-call delay. Each action retried per design guide §8 (exponential backoff, honor `Retry-After` on 429). Failures partway through are tolerable: idempotency means the next cycle resumes correctly.
+
+   **Per-user isolation:** a single contact's `UnifiClientError` is recorded and the cycle continues with the remaining contacts; `apply()` then raises one summary error so the orchestrator alerts. One bad record never blocks the rest. (The batch card pre-import is a shared prerequisite and still fails fast.)
+
+   **Email is best-effort:** UniFi requires globally-unique emails across users *and* admins. When a member's CiviCRM email is already registered to another account — commonly a staff member who is also a UniFi admin — the write is retried without the `user_email` field (so name/card/policy still apply) and a warning is logged. The member keeps door access; only the conflicting email isn't synced. This is *not* counted as a per-user failure, so it doesn't alert.
 7. **Log + persist state** — write audit entries; write last-success timestamp atomically (write to temp, fsync, rename).
 
 ---

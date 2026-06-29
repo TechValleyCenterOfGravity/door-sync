@@ -20,6 +20,7 @@ from door_sync.unifi.client import (
     UnifiClient,
     UnifiClientError,
     _compute_nfc_id,
+    _is_email_conflict,
     _parse_nfc_id,
     _parse_sync_alias,
     _redact,
@@ -90,6 +91,19 @@ def test_parse_sync_alias_rejects_non_digit_suffix() -> None:
     # isascii() guard: a superscript and a regular non-ASCII decimal digit.
     assert _parse_sync_alias("sync-²") is None  # U+00B2 superscript two
     assert _parse_sync_alias("sync-১") is None  # U+09E7 Bengali digit one
+
+
+# --- email-conflict detection ---
+
+
+def test_is_email_conflict_matches_email_exist_codes() -> None:
+    """Matches the admin/user EMAIL_EXIST variants; nothing else."""
+    assert _is_email_conflict("CODE_ADMIN_EMAIL_EXIST") is True
+    assert _is_email_conflict("CODE_USER_EMAIL_EXIST") is True
+    assert _is_email_conflict("CODE_AUTH_FAILED") is False
+    assert _is_email_conflict("CODE_RESOURCE_NOT_FOUND") is False
+    assert _is_email_conflict(None) is False
+    assert _is_email_conflict("") is False
 
 
 # --- Name splitting ---
@@ -1226,6 +1240,139 @@ def test_apply_update_credential_name_only(
     assert user_nfc_calls == []
 
 
+def test_apply_update_credential_email_conflict_retries_without_email(
+    httpx_mock: HTTPXMock,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    make_client: Callable[..., UnifiClient],
+) -> None:
+    """A member email already registered to another UniFi account (admin) must
+    not crash the cycle: retry the write without user_email so name still
+    applies, and warn. (CODE_ADMIN_EMAIL_EXIST)."""
+    monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
+    client = make_client(managed_policy_ids={"pol-1"})
+
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_card_tokens_page([(1234, "tok-1234")]),
+    )
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page(
+            [
+                _user_row(
+                    contact_id=42,
+                    user_id="uuid-42",
+                    first_name="Old",
+                    last_name="Name",
+                    nfc_token="tok-1234",
+                    user_email="old@example.com",
+                )
+            ]
+        ),
+    )
+    fetched = client.fetch_users()
+
+    # First profile PUT → email-conflict; retry (no email) → success.
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42",
+        json={
+            "code": "CODE_ADMIN_EMAIL_EXIST",
+            "msg": "Email address is already registered. Choose a different one.",
+            "data": None,
+        },
+    )
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+
+    resolved = ResolvedMember(
+        contact_id=42,
+        display_name="New Name",
+        card_id=1234,  # unchanged → no card calls
+        target_policy="pol-1",
+        resolution="tier",
+        email="staff@example.com",  # collides with an admin account
+    )
+    with caplog.at_level(logging.WARNING, logger="door_sync.unifi.client"):
+        client.apply(_diff(to_update_credential=((resolved, fetched[0]),)))
+
+    profile_puts = [
+        r
+        for r in httpx_mock.get_requests()
+        if r.method == "PUT" and r.url.path == "/api/v1/developer/users/uuid-42"
+    ]
+    assert len(profile_puts) == 2
+    assert _json.loads(profile_puts[0].content)["user_email"] == "staff@example.com"
+    retry_body = _json.loads(profile_puts[1].content)
+    assert "user_email" not in retry_body
+    assert retry_body == {"first_name": "New", "last_name": "Name"}
+    assert any("email already registered" in r.message for r in caplog.records)
+
+
+def test_apply_isolates_per_user_failure_and_summarizes(
+    httpx_mock: HTTPXMock,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    make_client: Callable[..., UnifiClient],
+) -> None:
+    """One user's failure must not stop the rest: contact 1's policy PUT fails
+    (non-email), contact 2's still runs, and apply() raises a summary so the
+    cycle is alerted."""
+    monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
+    client = make_client()
+
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page(
+            [
+                _user_row(contact_id=1, user_id="u1"),
+                _user_row(contact_id=2, user_id="u2"),
+            ]
+        ),
+    )
+    fetched = client.fetch_users()
+
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/u1/access_policies",
+        json={"code": "CODE_RESOURCE_NOT_FOUND", "msg": "policy not found", "data": None},
+    )
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/u2/access_policies",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+
+    r1 = _resolved(contact_id=1, target_policy="pol-x")
+    r2 = _resolved(contact_id=2, target_policy="pol-y")
+    diff = _diff(to_update_policy=((r1, fetched[0]), (r2, fetched[1])))
+
+    with caplog.at_level(logging.ERROR, logger="door_sync.unifi.client"):
+        with pytest.raises(UnifiClientError) as exc_info:
+            client.apply(diff)
+
+    # Contact 2 was still attempted despite contact 1 failing.
+    policy_put_paths = {
+        r.url.path
+        for r in httpx_mock.get_requests()
+        if r.method == "PUT" and r.url.path.endswith("/access_policies")
+    }
+    assert policy_put_paths == {
+        "/api/v1/developer/users/u1/access_policies",
+        "/api/v1/developer/users/u2/access_policies",
+    }
+    # The summary names the failed contact, and it was logged.
+    assert "contact=1" in str(exc_info.value)
+    assert any("apply failed for contact=1" in r.message for r in caplog.records)
+
+
 def test_apply_update_policy_replaces(
     httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch, make_client: Callable[..., UnifiClient]
 ) -> None:
@@ -1355,6 +1502,69 @@ def test_apply_create_new_user_path(
     )
     body = _json.loads(post_user.content)
     assert body == {"first_name": "Jane", "last_name": "Doe", "employee_number": "42"}
+
+
+def test_apply_create_email_conflict_retries_without_email(
+    httpx_mock: HTTPXMock,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    make_client: Callable[..., UnifiClient],
+) -> None:
+    """Creating a new member who is also a UniFi admin: the POST with
+    user_email is rejected (EMAIL_EXIST), so it retries without email and the
+    user is still created (no card/policy here to keep it focused)."""
+    monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
+    client = make_client()
+
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page([], total=0),
+    )
+    client.fetch_users()
+
+    # _preimport_unknown_cards loads the token map even with no card to import.
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_cards_page([]),
+    )
+    # First create POST → email conflict; retry without email → success.
+    httpx_mock.add_response(
+        method="POST",
+        url="https://192.0.2.1:12445/api/v1/developer/users",
+        json={"code": "CODE_ADMIN_EMAIL_EXIST", "msg": "already registered", "data": None},
+    )
+    httpx_mock.add_response(
+        method="POST",
+        url="https://192.0.2.1:12445/api/v1/developer/users",
+        json={
+            "code": "SUCCESS",
+            "msg": "success",
+            "data": {"id": "uuid-new", "first_name": "Jane", "last_name": "Doe"},
+        },
+    )
+
+    resolved = ResolvedMember(
+        contact_id=42,
+        display_name="Jane Doe",
+        card_id=None,
+        target_policy=None,
+        resolution="tier",
+        email="staff@example.com",
+    )
+    with caplog.at_level(logging.WARNING, logger="door_sync.unifi.client"):
+        client.apply(_diff(to_add=(resolved,)))
+
+    posts = [
+        r
+        for r in httpx_mock.get_requests()
+        if r.method == "POST" and r.url.path == "/api/v1/developer/users"
+    ]
+    assert len(posts) == 2
+    assert "user_email" in _json.loads(posts[0].content)
+    assert "user_email" not in _json.loads(posts[1].content)
+    assert any("email already registered" in r.message for r in caplog.records)
 
 
 def test_apply_reactivate_inactive_user_path(

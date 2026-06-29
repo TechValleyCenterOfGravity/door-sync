@@ -41,7 +41,16 @@ logger = logging.getLogger(__name__)
 
 
 class UnifiClientError(Exception):
-    """Raised on non-recoverable UniFi Access API failure."""
+    """Raised on non-recoverable UniFi Access API failure.
+
+    Carries the UniFi envelope error `code` (e.g. "CODE_ADMIN_EMAIL_EXIST")
+    when one is available, so callers can branch on specific conditions without
+    parsing the message string.
+    """
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class UnifiClient:
@@ -105,6 +114,9 @@ class UnifiClient:
         self._unifi_user_id_by_contact: dict[int, str] = {}
         self._nfc_cards_by_contact: dict[int, list[dict[str, Any]]] = {}
         self._nfc_token_map: dict[int, str] | None = None
+        # Per-cycle record of contacts whose apply step failed (reset each
+        # apply()); a non-empty list at the end of apply() raises a summary.
+        self._apply_failures: list[str] = []
         # Reverse of the token map: a card's `token` (the only stable card
         # identifier the /users endpoint exposes) -> its card number. Populated
         # alongside `_nfc_token_map` so reads can resolve a user's card.
@@ -192,7 +204,7 @@ class UnifiClient:
         code = payload.get("code")
         if code != "SUCCESS":
             msg = payload.get("msg", "")
-            raise UnifiClientError(f"{code}: {msg}")
+            raise UnifiClientError(f"{code}: {msg}", code=code if isinstance(code, str) else None)
         return payload.get("data")
 
     def _with_retries(self, action: Callable[[], httpx.Response]) -> httpx.Response:
@@ -395,13 +407,71 @@ class UnifiClient:
             self._populate_token_map_for_dry_run(diff)
             self._log_dry_run_actions(diff)
             return
+        # Per-user failures are isolated: a single contact's UnifiClientError is
+        # recorded and the cycle continues with the rest, then a summary is
+        # raised so the orchestrator alerts. _preimport is a shared prerequisite
+        # (batch card import) and is intentionally left to fail fast.
+        self._apply_failures = []
         self._preimport_unknown_cards(diff)
         self._apply_deactivate(diff)
         self._apply_update_credential(diff)
         self._apply_update_policy(diff)
         self._apply_add(diff)
+        if self._apply_failures:
+            raise UnifiClientError(
+                f"{len(self._apply_failures)} user update(s) failed this cycle: "
+                + "; ".join(self._apply_failures)
+            )
 
     _INTER_CALL_DELAY_SECONDS = 0.075
+
+    def _record_apply_failure(self, contact_id: int, exc: UnifiClientError) -> None:
+        """Log and record a per-user apply failure so the cycle can continue.
+
+        Args:
+            contact_id: The contact whose update failed.
+            exc: The API error raised for that contact.
+        """
+        logger.error("apply failed for contact=%d: %s", contact_id, exc)
+        self._apply_failures.append(f"contact={contact_id}: {exc}")
+
+    def _request_user_write(
+        self, method: str, path: str, body: dict[str, Any], *, contact_id: int
+    ) -> Any:
+        """Create/update a user, treating `user_email` as best-effort.
+
+        UniFi requires globally-unique emails (across users and admins). When a
+        member's email is already registered to another account — e.g. they are
+        also a UniFi admin — the write is rejected with an EMAIL_EXIST code. The
+        email simply cannot be synced for that member, but the rest of the
+        record (name, employee number) should still apply, so on that specific
+        error the `user_email` field is dropped and the write retried. If
+        nothing remains to write, the call is skipped.
+
+        Args:
+            method: HTTP method ("POST" or "PUT").
+            path: User endpoint path.
+            body: Request body, possibly containing "user_email".
+            contact_id: Contact being written, for the warning log.
+
+        Returns:
+            The API `data` payload from the successful (possibly retried) write,
+            or None if the retry had nothing left to send.
+        """
+        try:
+            return self._request(method, path, json=body)
+        except UnifiClientError as exc:
+            if "user_email" not in body or not _is_email_conflict(exc.code):
+                raise
+            logger.warning(
+                "contact %d: email already registered to another UniFi account; "
+                "syncing the record without email",
+                contact_id,
+            )
+            retry_body = {k: v for k, v in body.items() if k != "user_email"}
+            if not retry_body:
+                return None
+            return self._request(method, path, json=retry_body)
 
     def _apply_update_credential(self, diff: Diff) -> None:
         """Apply credential changes (display name and/or NFC card) from a diff.
@@ -421,48 +491,65 @@ class UnifiClient:
                 )
                 continue
 
-            user_fields: dict[str, Any] = {}
-            if resolved.display_name != unifi_user.display_name:
-                first, last = _split_name(resolved.display_name)
-                user_fields["first_name"] = first
-                user_fields["last_name"] = last
-            if _email_differs_ci(resolved.email, unifi_user.email):
-                # Empty string clears the email in UniFi; a value sets it.
-                user_fields["user_email"] = resolved.email or ""
-            if user_fields:
+            try:
+                self._apply_one_credential(resolved, unifi_user, user_id)
+            except UnifiClientError as exc:
+                self._record_apply_failure(resolved.contact_id, exc)
+                continue
+
+    def _apply_one_credential(
+        self, resolved: ResolvedMember, unifi_user: UnifiUser, user_id: str
+    ) -> None:
+        """Apply one contact's name/email/card credential change.
+
+        Args:
+            resolved: Desired member state from CiviCRM.
+            unifi_user: Current UniFi state for the same contact.
+            user_id: UniFi user identifier.
+        """
+        user_fields: dict[str, Any] = {}
+        if resolved.display_name != unifi_user.display_name:
+            first, last = _split_name(resolved.display_name)
+            user_fields["first_name"] = first
+            user_fields["last_name"] = last
+        if _email_differs_ci(resolved.email, unifi_user.email):
+            # Empty string clears the email in UniFi; a value sets it.
+            user_fields["user_email"] = resolved.email or ""
+        if user_fields:
+            self._request_user_write(
+                "PUT",
+                f"/api/v1/developer/users/{user_id}",
+                user_fields,
+                contact_id=resolved.contact_id,
+            )
+            time.sleep(self._INTER_CALL_DELAY_SECONDS)
+
+        if resolved.card_id != unifi_user.card_id:
+            # Delete old card(s) on the user.
+            for old_card in self._nfc_cards_by_contact.get(resolved.contact_id, []):
+                old_token = str(old_card.get("token", ""))
+                if not old_token:
+                    continue
                 self._request(
-                    "PUT",
-                    f"/api/v1/developer/users/{user_id}",
-                    json=user_fields,
+                    "DELETE",
+                    f"/api/v1/developer/users/{user_id}/nfc_cards/delete",
+                    json={"token": old_token},
                 )
                 time.sleep(self._INTER_CALL_DELAY_SECONDS)
-
-            if resolved.card_id != unifi_user.card_id:
-                # Delete old card(s) on the user.
-                for old_card in self._nfc_cards_by_contact.get(resolved.contact_id, []):
-                    old_token = str(old_card.get("token", ""))
-                    if not old_token:
-                        continue
-                    self._request(
-                        "DELETE",
-                        f"/api/v1/developer/users/{user_id}/nfc_cards/delete",
-                        json={"token": old_token},
+            # Bind new card if specified.
+            if resolved.card_id is not None:
+                new_token = self._ensure_nfc_token_map().get(resolved.card_id)
+                if new_token is None:
+                    raise UnifiClientError(
+                        f"no token for card_id={_redact(resolved.card_id)} "
+                        f"after import (contact={resolved.contact_id})"
                     )
-                    time.sleep(self._INTER_CALL_DELAY_SECONDS)
-                # Bind new card if specified.
-                if resolved.card_id is not None:
-                    new_token = self._ensure_nfc_token_map().get(resolved.card_id)
-                    if new_token is None:
-                        raise UnifiClientError(
-                            f"no token for card_id={_redact(resolved.card_id)} "
-                            f"after import (contact={resolved.contact_id})"
-                        )
-                    self._request(
-                        "PUT",
-                        f"/api/v1/developer/users/{user_id}/nfc_cards",
-                        json={"token": new_token, "force_add": False},
-                    )
-                    time.sleep(self._INTER_CALL_DELAY_SECONDS)
+                self._request(
+                    "PUT",
+                    f"/api/v1/developer/users/{user_id}/nfc_cards",
+                    json={"token": new_token, "force_add": False},
+                )
+                time.sleep(self._INTER_CALL_DELAY_SECONDS)
 
     def _apply_update_policy(self, diff: Diff) -> None:
         for resolved, _unifi_user in diff.to_update_policy:
@@ -483,11 +570,15 @@ class UnifiClient:
             # users is intentionally omitted: this endpoint sets per-user
             # assignments, so including the global ID would convert it into a
             # manual per-user mapping. The global policy auto-applies on its own.
-            self._request(
-                "PUT",
-                f"/api/v1/developer/users/{user_id}/access_policies",
-                json={"access_policy_ids": [resolved.target_policy]},
-            )
+            try:
+                self._request(
+                    "PUT",
+                    f"/api/v1/developer/users/{user_id}/access_policies",
+                    json={"access_policy_ids": [resolved.target_policy]},
+                )
+            except UnifiClientError as exc:
+                self._record_apply_failure(resolved.contact_id, exc)
+                continue
             time.sleep(self._INTER_CALL_DELAY_SECONDS)
 
     def _apply_deactivate(self, diff: Diff) -> None:
@@ -499,11 +590,15 @@ class UnifiClient:
                     unifi_user.contact_id,
                 )
                 continue
-            self._request(
-                "PUT",
-                f"/api/v1/developer/users/{user_id}",
-                json={"status": "DEACTIVATED"},
-            )
+            try:
+                self._request(
+                    "PUT",
+                    f"/api/v1/developer/users/{user_id}",
+                    json={"status": "DEACTIVATED"},
+                )
+            except UnifiClientError as exc:
+                self._record_apply_failure(unifi_user.contact_id, exc)
+                continue
             time.sleep(self._INTER_CALL_DELAY_SECONDS)
 
     def _log_dry_run_actions(self, diff: Diff) -> None:
@@ -687,21 +782,25 @@ class UnifiClient:
             diff: The diff containing members to add.
         """
         for resolved in diff.to_add:
-            existing_user_id = self._unifi_user_id_by_contact.get(resolved.contact_id)
-            first, last = _split_name(resolved.display_name)
-            if existing_user_id is not None:
-                # Reactivate path: prepare credentials/policy first, then activate.
-                self._prepare_reactivation(resolved, existing_user_id, first, last)
-                self._bind_card_if_set(existing_user_id, resolved)
-                self._assign_policy_if_set(existing_user_id, resolved)
-                self._activate_user(existing_user_id)
-            else:
-                # True create
-                user_id = self._create_user(resolved, first, last)
-                self._unifi_user_id_by_contact[resolved.contact_id] = user_id
-                # Common tail for newly created users.
-                self._bind_card_if_set(user_id, resolved)
-                self._assign_policy_if_set(user_id, resolved)
+            try:
+                existing_user_id = self._unifi_user_id_by_contact.get(resolved.contact_id)
+                first, last = _split_name(resolved.display_name)
+                if existing_user_id is not None:
+                    # Reactivate path: prepare credentials/policy first, then activate.
+                    self._prepare_reactivation(resolved, existing_user_id, first, last)
+                    self._bind_card_if_set(existing_user_id, resolved)
+                    self._assign_policy_if_set(existing_user_id, resolved)
+                    self._activate_user(existing_user_id)
+                else:
+                    # True create
+                    user_id = self._create_user(resolved, first, last)
+                    self._unifi_user_id_by_contact[resolved.contact_id] = user_id
+                    # Common tail for newly created users.
+                    self._bind_card_if_set(user_id, resolved)
+                    self._assign_policy_if_set(user_id, resolved)
+            except UnifiClientError as exc:
+                self._record_apply_failure(resolved.contact_id, exc)
+                continue
 
     def _prepare_reactivation(
         self,
@@ -732,10 +831,11 @@ class UnifiClient:
             "employee_number": str(resolved.contact_id),
             "user_email": resolved.email or "",
         }
-        self._request(
+        self._request_user_write(
             "PUT",
             f"/api/v1/developer/users/{user_id}",
-            json=body,
+            body,
+            contact_id=resolved.contact_id,
         )
         time.sleep(self._INTER_CALL_DELAY_SECONDS)
         # Delete any old cards that differ from the new card_id.
@@ -790,7 +890,9 @@ class UnifiClient:
         }
         if resolved.email is not None:
             body["user_email"] = resolved.email
-        data = self._request("POST", "/api/v1/developer/users", json=body)
+        data = self._request_user_write(
+            "POST", "/api/v1/developer/users", body, contact_id=resolved.contact_id
+        )
         time.sleep(self._INTER_CALL_DELAY_SECONDS)
         if not isinstance(data, dict) or "id" not in data:
             raise UnifiClientError(f"POST /users returned no id for contact={resolved.contact_id}")
@@ -882,6 +984,16 @@ def _parse_nfc_id(nfc_id: str, expected_facility_code: int) -> int | None:
     if fc != expected_facility_code:
         return None
     return cn
+
+
+def _is_email_conflict(code: str | None) -> bool:
+    """True if a UniFi error code signals an already-registered email.
+
+    UniFi Access requires globally-unique emails across users and admins; a
+    collision surfaces as CODE_ADMIN_EMAIL_EXIST (or a USER variant). Matching
+    the ``EMAIL_EXIST`` suffix covers both without hard-coding each one.
+    """
+    return code is not None and code.endswith("EMAIL_EXIST")
 
 
 def _parse_sync_alias(alias: str) -> int | None:
