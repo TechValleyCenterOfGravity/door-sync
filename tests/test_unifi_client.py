@@ -496,10 +496,9 @@ def test_fetch_users_parses_user_email(httpx_mock: HTTPXMock) -> None:
         url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
         json=_users_page([_user_row(contact_id=42, user_email="jane@example.com")]),
     )
-    client = _make_client()
-    users = client.fetch_users()
-    assert users[0].email == "jane@example.com"
-    client.close()
+    with _make_client() as client:
+        users = client.fetch_users()
+        assert users[0].email == "jane@example.com"
 
 
 def test_fetch_users_missing_user_email_is_none(httpx_mock: HTTPXMock) -> None:
@@ -508,10 +507,9 @@ def test_fetch_users_missing_user_email_is_none(httpx_mock: HTTPXMock) -> None:
         url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
         json=_users_page([_user_row(contact_id=42)]),  # no user_email key
     )
-    client = _make_client()
-    users = client.fetch_users()
-    assert users[0].email is None
-    client.close()
+    with _make_client() as client:
+        users = client.fetch_users()
+        assert users[0].email is None
 
 
 # --- apply preconditions & dry-run ---

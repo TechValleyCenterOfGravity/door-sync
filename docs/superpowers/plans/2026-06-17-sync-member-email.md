@@ -108,7 +108,7 @@ In `src/door_sync/models.py`, add `email` as the last field of `CiviMember`, `Re
 
 Update its docstring `Parameters:` block, adding:
 
-```
+```text
         email: Contact's primary email from CiviCRM, or None if absent.
 ```
 
@@ -121,7 +121,7 @@ Update its docstring `Parameters:` block, adding:
 
 Add to its docstring:
 
-```
+```text
         email: Contact's primary email carried through from CiviCRM, or None.
 ```
 
@@ -134,7 +134,7 @@ Add to its docstring:
 
 Add to its docstring:
 
-```
+```text
         email: User's email (user_email) as read from UniFi, or None.
 ```
 
@@ -1157,7 +1157,7 @@ In `docs/architecture.md` §6, update the three dataclass definitions in the cod
 
 Add a sentence to the "Naming note" paragraph after the code block:
 
-```
+```text
 The `email` field rides `to_update_credential` for the same reason as
 `display_name`: it is written via the same `PUT /users/{id}` endpoint. It is
 compared case-insensitively so harmless case differences don't churn.
