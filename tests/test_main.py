@@ -204,7 +204,13 @@ def test_show_diff_prints_sections_and_exits_zero(
             pass
 
     class _Unifi:
-        def __init__(self, c: UnifiConfig, *, dry_run: bool = False) -> None:
+        def __init__(
+            self,
+            c: UnifiConfig,
+            *,
+            dry_run: bool = False,
+            managed_policy_ids: frozenset[str] | None = None,
+        ) -> None:
             pass
 
         def fetch_users(self) -> list[Any]:

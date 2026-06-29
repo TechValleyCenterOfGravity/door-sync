@@ -64,9 +64,11 @@ class FakeUnifiClient:
         *,
         dry_run: bool = False,
         users: list[UnifiUser] | None = None,
+        managed_policy_ids: frozenset[str] | None = None,
     ) -> None:
         self.dry_run = dry_run
         self._users = list(users or [])
+        self.managed_policy_ids = managed_policy_ids
         self.apply_calls: list[Diff] = []
         self._fetch_called = False
 
@@ -180,14 +182,34 @@ def _patch_clients(
         holder["civi"] = client
         return client
 
-    def make_unifi(cfg: UnifiConfig, *, dry_run: bool = False) -> FakeUnifiClient:
-        client = FakeUnifiClient(cfg, dry_run=dry_run, users=unifi_users)
+    def make_unifi(
+        cfg: UnifiConfig,
+        *,
+        dry_run: bool = False,
+        managed_policy_ids: frozenset[str] | None = None,
+    ) -> FakeUnifiClient:
+        client = FakeUnifiClient(
+            cfg, dry_run=dry_run, users=unifi_users, managed_policy_ids=managed_policy_ids
+        )
         holder["unifi"] = client
         return client
 
     monkeypatch.setattr(orchestrator, "CivicrmClient", make_civi)
     monkeypatch.setattr(orchestrator, "UnifiClient", make_unifi)
     return holder
+
+
+def test_reconcile_passes_managed_policy_ids_to_unifi(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The orchestrator must tell UnifiClient which policies it manages so an
+    externally auto-applied policy isn't mistaken for tier drift."""
+    cfg = _config(tmp_path)  # tier_mapping maps "Gold" -> target_policy "p1"
+    holder = _patch_clients(monkeypatch, civi_members=[], unifi_users=[])
+
+    orchestrator.reconcile(cfg, dry_run=True)
+
+    assert holder["unifi"].managed_policy_ids == frozenset({"p1"})
 
 
 def test_happy_path_no_drift(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -319,9 +341,16 @@ def test_idempotency_canary_second_cycle_is_noop(
     def make_civi(cfg: CivicrmConfig) -> FakeCivicrmClient:
         return FakeCivicrmClient(cfg, members=members)
 
-    def make_unifi(cfg: UnifiConfig, *, dry_run: bool = False) -> FakeUnifiClient:
+    def make_unifi(
+        cfg: UnifiConfig,
+        *,
+        dry_run: bool = False,
+        managed_policy_ids: frozenset[str] | None = None,
+    ) -> FakeUnifiClient:
         if "client" not in shared_unifi:
-            shared_unifi["client"] = FakeUnifiClient(cfg, dry_run=dry_run, users=users)
+            shared_unifi["client"] = FakeUnifiClient(
+                cfg, dry_run=dry_run, users=users, managed_policy_ids=managed_policy_ids
+            )
         return shared_unifi["client"]
 
     monkeypatch.setattr(orchestrator, "CivicrmClient", make_civi)

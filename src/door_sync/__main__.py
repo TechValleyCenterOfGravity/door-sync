@@ -152,7 +152,11 @@ def cmd_show_diff(args: argparse.Namespace) -> int:
     try:
         with (
             CivicrmClient(config.civicrm) as civicrm,
-            UnifiClient(config.unifi, dry_run=True) as unifi,
+            UnifiClient(
+                config.unifi,
+                dry_run=True,
+                managed_policy_ids=tier_mapping.managed_policy_ids(config.tier_mapping),
+            ) as unifi,
         ):
             members = civicrm.fetch_active()
             resolved = [tier_mapping.resolve(m, config.tier_mapping) for m in members]

@@ -209,12 +209,13 @@ def make_client() -> Iterator[Callable[..., UnifiClient]]:
         *,
         dry_run: bool = False,
         cert: bytes = b"fake-cert",
+        managed_policy_ids: set[str] | None = None,
     ) -> UnifiClient:
         if config is None:
             fp = hashlib.sha256(cert).hexdigest()
             config = _unifi_config(fingerprint=fp)
         with _patched_tls(cert):
-            client = UnifiClient(config, dry_run=dry_run)
+            client = UnifiClient(config, dry_run=dry_run, managed_policy_ids=managed_policy_ids)
         created.append(client)
         return client
 
@@ -478,6 +479,74 @@ def test_fetch_users_logs_warning_on_multiple_cards(
         users = client.fetch_users()
     assert users[0].card_id == 1234  # uses the first card
     assert any("2 cards" in rec.message for rec in caplog.records)
+
+
+def test_fetch_users_filters_unmanaged_policy(
+    httpx_mock: HTTPXMock, make_client: Callable[..., UnifiClient]
+) -> None:
+    """A globally auto-applied policy in access_policy_ids is ignored: u.policy is
+    the configured (managed) tier policy, regardless of array order."""
+    row = _user_row(contact_id=42)
+    row["access_policy_ids"] = ["pol-global", "pol-1"]  # global sorts first
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page([row]),
+    )
+    client = make_client(managed_policy_ids={"pol-1"})
+    users = client.fetch_users()
+    assert users[0].policy == "pol-1"
+
+
+def test_fetch_users_no_warning_when_one_managed_policy_plus_global(
+    httpx_mock: HTTPXMock, caplog: pytest.LogCaptureFixture, make_client: Callable[..., UnifiClient]
+) -> None:
+    """global + one managed policy is unambiguous; no 'access policies' warning."""
+    row = _user_row(contact_id=42)
+    row["access_policy_ids"] = ["pol-global", "pol-1"]
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page([row]),
+    )
+    with caplog.at_level(logging.WARNING, logger="door_sync.unifi.client"):
+        client = make_client(managed_policy_ids={"pol-1"})
+        client.fetch_users()
+    assert not any("access policies" in rec.message for rec in caplog.records)
+
+
+def test_fetch_users_warns_on_multiple_managed_policies(
+    httpx_mock: HTTPXMock, caplog: pytest.LogCaptureFixture, make_client: Callable[..., UnifiClient]
+) -> None:
+    """Two *managed* policies on one user is genuinely ambiguous -> warn, use first."""
+    row = _user_row(contact_id=42)
+    row["access_policy_ids"] = ["pol-1", "pol-2"]
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page([row]),
+    )
+    with caplog.at_level(logging.WARNING, logger="door_sync.unifi.client"):
+        client = make_client(managed_policy_ids={"pol-1", "pol-2"})
+        users = client.fetch_users()
+    assert users[0].policy in {"pol-1", "pol-2"}
+    assert any("2 access policies" in rec.message for rec in caplog.records)
+
+
+def test_fetch_users_unmanaged_only_yields_policy_none(
+    httpx_mock: HTTPXMock, make_client: Callable[..., UnifiClient]
+) -> None:
+    """A user holding only the global policy (no tier policy) reads as policy=None."""
+    row = _user_row(contact_id=42)
+    row["access_policy_ids"] = ["pol-global"]
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page([row]),
+    )
+    client = make_client(managed_policy_ids={"pol-1"})
+    users = client.fetch_users()
+    assert users[0].policy is None
 
 
 def test_fetch_users_foreign_fc_card_yields_card_id_none(
@@ -1034,6 +1103,38 @@ def test_apply_update_policy_replaces(
 
     put_req = httpx_mock.get_requests()[-1]
     assert _json.loads(put_req.content) == {"access_policy_ids": ["pol-new"]}
+
+
+def test_apply_update_policy_sends_only_tier_policy(
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch, make_client: Callable[..., UnifiClient]
+) -> None:
+    """A policy update sends ONLY the tier policy, never the auto-applied global
+    one: re-sending the global ID would convert it into a manual per-user
+    assignment. The global policy auto-applies on its own."""
+    monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
+    client = make_client(managed_policy_ids={"pol-old", "pol-new"})
+
+    row = _user_row(contact_id=42, user_id="uuid-42")
+    row["access_policy_ids"] = ["pol-global", "pol-old"]
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page([row]),
+    )
+    fetched = client.fetch_users()
+    assert fetched[0].policy == "pol-old"  # managed policy, not the global one
+
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42/access_policies",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+
+    resolved = _resolved(contact_id=42, target_policy="pol-new")
+    client.apply(_diff(to_update_policy=((resolved, fetched[0]),)))
+
+    body = _json.loads(httpx_mock.get_requests()[-1].content)
+    assert body == {"access_policy_ids": ["pol-new"]}  # global NOT included
 
 
 def test_apply_create_new_user_path(

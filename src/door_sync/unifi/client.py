@@ -16,7 +16,7 @@ import random
 import socket
 import ssl
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from types import TracebackType
 from typing import Any
 from urllib.parse import urlsplit
@@ -46,15 +46,29 @@ class UnifiClient:
     redacted log lines (architecture §5).
     """
 
-    def __init__(self, config: UnifiConfig, *, dry_run: bool = False) -> None:
+    def __init__(
+        self,
+        config: UnifiConfig,
+        *,
+        dry_run: bool = False,
+        managed_policy_ids: Iterable[str] | None = None,
+    ) -> None:
         """Initialize the UniFi Access client.
 
         Args:
             config: UniFi connection settings including host, API key, TLS fingerprint, and facility code.
             dry_run: If True, write operations log intended actions instead of executing them.
+            managed_policy_ids: The set of access policy IDs door-sync owns (the
+                tier-mapping target policies). When provided, any policy on a
+                UniFi user that is not in this set is treated as externally
+                managed (e.g. a policy auto-applied to all users): it is ignored
+                when reading the user's current policy and preserved on write.
+                When None/empty, every policy is treated as managed (legacy
+                behavior: take the first).
         """
         self._config = config
         self._dry_run = dry_run
+        self._managed_policy_ids: frozenset[str] = frozenset(managed_policy_ids or ())
         # Resolve hostname+port once so TLS verification and httpx requests
         # both target the same endpoint. Without this, a host like
         # "https://controller.example.org" (no port) would pin TLS on 12445
@@ -296,16 +310,25 @@ class UnifiClient:
                     contact_id,
                 )
 
-        policies = row.get("access_policy_ids") or []
-        if not isinstance(policies, list):
-            policies = []
-        if len(policies) > 1:
+        raw_policies = row.get("access_policy_ids") or []
+        if not isinstance(raw_policies, list):
+            raw_policies = []
+        all_policies = [str(p) for p in raw_policies]
+        # When a managed set is configured, only policies door-sync owns count as
+        # "the user's policy"; anything else (e.g. a policy UniFi auto-applies to
+        # all users) is ignored so it isn't mistaken for tier drift. With no
+        # managed set, every policy is treated as managed (legacy behavior).
+        if self._managed_policy_ids:
+            managed = [p for p in all_policies if p in self._managed_policy_ids]
+        else:
+            managed = all_policies
+        if len(managed) > 1:
             logger.warning(
                 "contact %d has %d access policies; using the first",
                 contact_id,
-                len(policies),
+                len(managed),
             )
-        policy = str(policies[0]) if policies else None
+        policy = managed[0] if managed else None
 
         first_name = str(row.get("first_name", ""))
         last_name = str(row.get("last_name", ""))
@@ -429,6 +452,10 @@ class UnifiClient:
                     resolved.contact_id,
                 )
                 continue
+            # Send ONLY the tier policy. A policy UniFi auto-applies to all
+            # users is intentionally omitted: this endpoint sets per-user
+            # assignments, so including the global ID would convert it into a
+            # manual per-user mapping. The global policy auto-applies on its own.
             self._request(
                 "PUT",
                 f"/api/v1/developer/users/{user_id}/access_policies",
@@ -774,6 +801,8 @@ class UnifiClient:
         """
         if resolved.target_policy is None:
             return
+        # Only the tier policy; a policy auto-applied to all users is omitted
+        # (see _apply_update_policy).
         self._request(
             "PUT",
             f"/api/v1/developer/users/{user_id}/access_policies",
