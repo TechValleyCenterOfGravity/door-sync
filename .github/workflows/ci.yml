@@ -31,8 +31,10 @@ jobs:
       run: uv python install
     - name: Install dependencies
       run: uv sync --locked --all-extras --dev
-    - name: Format check
+    - name: Lint
       run: uv run ruff check --output-format=github .
+    - name: Format check
+      run: uv run ruff format --diff .
     - name: Type check
       run: uv run pyrefly check --output-format=github
     - name: Test
