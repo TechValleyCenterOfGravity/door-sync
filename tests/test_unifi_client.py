@@ -1427,6 +1427,90 @@ def test_apply_bind_conflict_holder_with_null_status_is_not_reclaimed(
     assert "contact=8000" in str(exc_info.value)
 
 
+def test_deactivate_with_failed_card_delete_allows_same_cycle_reclaim(
+    httpx_mock: HTTPXMock,
+    monkeypatch: pytest.MonkeyPatch,
+    make_client: Callable[..., UnifiClient],
+) -> None:
+    """A failed card delete during deactivation still permits a same-cycle reclaim.
+
+    The holder cache is refreshed to DEACTIVATED after the status change, so the
+    still-bound card is force-reclaimed rather than mis-read as the stale ACTIVE
+    snapshot captured at fetch time.
+    """
+    monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
+
+    client = make_client()
+
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_card_tokens_page([(1234, "tok-1234")]),
+    )
+    # H (5000) is ACTIVE and holds tok-1234 and is departing; M (7590) is being
+    # assigned that same card this cycle.
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page(
+            [
+                _user_row(contact_id=5000, user_id="uuid-5000", nfc_token="tok-1234"),
+                _user_row(
+                    contact_id=7590, user_id="uuid-7590", first_name="Member", last_name="7590"
+                ),
+            ]
+        ),
+    )
+    fetched = client.fetch_users()
+    holder = next(u for u in fetched if u.contact_id == 5000)
+    target = next(u for u in fetched if u.contact_id == 7590)
+
+    # The pre-deactivation card delete fails (error envelope) ...
+    httpx_mock.add_response(
+        method="DELETE",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-5000/nfc_cards/delete",
+        json={"code": "CODE_NOT_FOUND", "msg": "no-man zone", "data": None},
+    )
+    # ... but the deactivation status change succeeds.
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-5000",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+    # M's bind: rejected (card still on the now-deactivated H), then force-reclaimed.
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-7590/nfc_cards",
+        json={
+            "code": "CODE_CREDS_NFC_HAS_BIND_USER",
+            "msg": "This NFC card is already assigned to another user.",
+            "data": None,
+        },
+    )
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-7590/nfc_cards",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+
+    diff = _diff(
+        to_deactivate=(holder,),
+        to_update_credential=((_resolved(7590, card_id=1234), target),),
+    )
+    # No raise: the still-bound card is reclaimed despite the failed delete.
+    client.apply(diff)
+
+    binds = [
+        _json.loads(r.content)
+        for r in httpx_mock.get_requests()
+        if r.method == "PUT" and r.url.path.endswith("/users/uuid-7590/nfc_cards")
+    ]
+    assert binds == [
+        {"token": "tok-1234", "force_add": False},
+        {"token": "tok-1234", "force_add": True},
+    ]
+
+
 def test_apply_update_credential_swaps_card(
     httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch, make_client: Callable[..., UnifiClient]
 ) -> None:

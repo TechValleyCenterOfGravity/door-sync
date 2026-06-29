@@ -17,7 +17,7 @@ import socket
 import ssl
 import time
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import TracebackType
 from typing import Any
 from urllib.parse import urlsplit
@@ -726,6 +726,26 @@ class UnifiClient:
             card for card in cards if str(card.get("token") or "") != token
         ]
 
+    def _mark_holder_deactivated(self, contact_id: int, user_id: str) -> None:
+        """Refresh a just-deactivated user's cached card holders to DEACTIVATED.
+
+        ``_holder_by_token`` captures each holder's status at ``fetch_users()``
+        time (ACTIVE for a user now being deactivated). If the pre-deactivation
+        card delete failed, the card is still bound; without this refresh a
+        same-cycle reassignment of that number would read the stale ACTIVE
+        snapshot and refuse to reclaim. The ``user_id`` guard avoids touching a
+        token already moved to a different holder.
+
+        Args:
+            contact_id: The contact whose cached card holders are refreshed.
+            user_id: The deactivated user's id.
+        """
+        for card in self._nfc_cards_by_contact.get(contact_id, []):
+            token = str(card.get("token") or "")
+            holder = self._holder_by_token.get(token)
+            if holder is not None and holder.user_id == user_id:
+                self._holder_by_token[token] = replace(holder, status="DEACTIVATED")
+
     def _apply_update_policy(self, diff: Diff) -> None:
         for resolved, _unifi_user in diff.to_update_policy:
             user_id = self._unifi_user_id_by_contact.get(resolved.contact_id)
@@ -787,6 +807,10 @@ class UnifiClient:
                     json={"status": "DEACTIVATED"},
                 )
                 time.sleep(self._INTER_CALL_DELAY_SECONDS)
+                # The user is now deactivated; keep the holder cache in step so a
+                # still-bound card (delete may have failed above) is force-reclaimed
+                # — not mis-read as ACTIVE — if reassigned later this cycle.
+                self._mark_holder_deactivated(unifi_user.contact_id, user_id)
             except UnifiClientError as exc:
                 self._record_apply_failure(unifi_user.contact_id, exc)
                 continue
