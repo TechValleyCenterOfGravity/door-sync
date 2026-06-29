@@ -31,7 +31,6 @@ _PAGE_SIZE = 250
 _CONTACT_BATCH_SIZE = (
     500  # Caps contact_ids per Membership.get IN clause to keep request body bounded
 )
-_DEFAULT_ACTIVE_STATUSES = ("Current", "Grace", "New")
 _MAX_PAGES = 1_000  # 250,000 records — far above any plausible deployment
 _MAX_ATTEMPTS = 3
 
