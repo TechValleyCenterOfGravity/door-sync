@@ -617,35 +617,73 @@ class UnifiClient:
             )
             time.sleep(self._INTER_CALL_DELAY_SECONDS)
 
-    def _bind_nfc_card(self, user_id: str, token: str, card_id: int) -> None:
-        """Bind an NFC card to a user, naming the current holder on conflict.
+    def _put_bind_card(self, user_id: str, token: str) -> None:
+        """Issue the raw bind request (``force_add=false``) for one card."""
+        self._request(
+            "PUT",
+            f"/api/v1/developer/users/{user_id}/nfc_cards",
+            json={"token": token, "force_add": False},
+        )
 
-        door-sync binds with ``force_add=false`` so it never silently steals a
-        card from another user. When UniFi rejects the bind because the card is
-        already assigned (``CODE_CREDS_NFC_HAS_BIND_USER``), the current holder is
-        looked up from the ``fetch_users()`` snapshot and named in the raised
-        error, so the alert is actionable. The card number is redacted; only who
-        holds it is disclosed (architecture §11).
+    def _bind_nfc_card(self, user_id: str, token: str, card_id: int) -> None:
+        """Bind an NFC card to a user, reclaiming it from a disabled holder.
+
+        door-sync binds with ``force_add=false`` so it never force-steals a card.
+        When UniFi rejects the bind because the card is already assigned
+        (``CODE_CREDS_NFC_HAS_BIND_USER``), the current holder is looked up from
+        the ``fetch_users()`` snapshot:
+
+        * If the holder is a *disabled* UniFi user, the card is theirs only as
+          dead state — door-sync unbinds it from them and retries the bind, so a
+          recycled card stuck on a deactivated member is reclaimed automatically.
+          The reclaim is logged (a warning), not counted as a failure.
+        * Otherwise (an *active* user, or a holder not in the snapshot), the card
+          is left alone and the error is re-raised naming the holder, so the
+          alert is actionable.
+
+        The card number is redacted everywhere; only who holds it is disclosed
+        (architecture §11).
 
         Args:
             user_id: UniFi user the card should bind to.
             token: Opaque UniFi card token to bind.
-            card_id: Numeric card id, for a redacted reference in the error.
+            card_id: Numeric card id, for a redacted reference in logs/errors.
 
         Raises:
-            UnifiClientError: If the bind fails. On a bind-conflict the message is
-                enriched with the current holder; the original ``code`` is kept.
+            UnifiClientError: If the bind fails and the card was not reclaimable.
+                On a bind-conflict the message is enriched with the current
+                holder; the original ``code`` is kept.
         """
         try:
-            self._request(
-                "PUT",
-                f"/api/v1/developer/users/{user_id}/nfc_cards",
-                json={"token": token, "force_add": False},
-            )
+            self._put_bind_card(user_id, token)
         except UnifiClientError as exc:
             if exc.code != _CODE_NFC_HAS_BIND_USER:
                 raise
             holder = self._holder_by_token.get(token)
+            if (
+                holder is not None
+                and holder.user_id
+                and holder.user_id != user_id
+                and _holder_is_disabled(holder)
+            ):
+                # The card is dead state on a deactivated user; take it back.
+                logger.warning(
+                    "card %s is bound to disabled %s; reclaiming it for this member",
+                    _redact(card_id),
+                    _describe_card_holder(holder),
+                )
+                self._request(
+                    "DELETE",
+                    f"/api/v1/developer/users/{holder.user_id}/nfc_cards/delete",
+                    json={"token": token},
+                )
+                time.sleep(self._INTER_CALL_DELAY_SECONDS)
+                self._put_bind_card(user_id, token)
+                # The card has moved; drop the stale holder so a later same-cycle
+                # lookup on this token doesn't misreport it.
+                self._holder_by_token.pop(token, None)
+                time.sleep(self._INTER_CALL_DELAY_SECONDS)
+                return
             who = (
                 _describe_card_holder(holder)
                 if holder is not None
@@ -1180,6 +1218,18 @@ def _redact(card_id: int | None) -> str:
     if card_id is None:
         return "none"
     return f"****{card_id % 10000:04d}"
+
+
+def _holder_is_disabled(holder: _CardHolder) -> bool:
+    """True if a card's current holder is a deactivated (non-active) UniFi user.
+
+    Mirrors ``UnifiUser.active`` (status == "ACTIVE"): anything else — chiefly
+    "DEACTIVATED" — counts as disabled, so door-sync may reclaim the card. An
+    empty or unreadable status is treated as NOT disabled, so a card is never
+    pulled from a holder whose state could not be confirmed.
+    """
+    status = holder.status.strip().upper()
+    return status != "" and status != "ACTIVE"
 
 
 def _describe_card_holder(holder: _CardHolder) -> str:
