@@ -617,12 +617,19 @@ class UnifiClient:
             )
             time.sleep(self._INTER_CALL_DELAY_SECONDS)
 
-    def _put_bind_card(self, user_id: str, token: str) -> None:
-        """Issue the raw bind request (``force_add=false``) for one card."""
+    def _put_bind_card(self, user_id: str, token: str, *, force_add: bool = False) -> None:
+        """Issue the raw card-bind request for one user.
+
+        ``force_add=False`` (default) never displaces another user. ``force_add=
+        True`` is used only to reclaim a card from a *disabled* holder: the card
+        cannot be unbound from a deactivated user (UniFi answers card mutations on
+        a deactivated account with HTTP 404 "no-man zone"), so the only way to
+        move it is to force the new bind, which reassigns it.
+        """
         self._request(
             "PUT",
             f"/api/v1/developer/users/{user_id}/nfc_cards",
-            json={"token": token, "force_add": False},
+            json={"token": token, "force_add": force_add},
         )
 
     def _bind_nfc_card(self, user_id: str, token: str, card_id: int) -> None:
@@ -634,9 +641,12 @@ class UnifiClient:
         the ``fetch_users()`` snapshot:
 
         * If the holder is a *disabled* UniFi user, the card is theirs only as
-          dead state — door-sync unbinds it from them and retries the bind, so a
-          recycled card stuck on a deactivated member is reclaimed automatically.
-          The reclaim is logged (a warning), not counted as a failure.
+          dead state — door-sync force-reassigns it to this member (``force_add=
+          True``), so a recycled card stuck on a deactivated member is reclaimed
+          automatically. It cannot be unbound from the disabled holder first
+          (UniFi rejects card mutations on a deactivated user), so forcing the
+          new bind is the only path. The reclaim is logged (a warning), not
+          counted as a failure.
         * Otherwise (an *active* user, or a holder not in the snapshot), the card
           is left alone and the error is re-raised naming the holder, so the
           alert is actionable.
@@ -666,19 +676,15 @@ class UnifiClient:
                 and holder.user_id != user_id
                 and _holder_is_disabled(holder)
             ):
-                # The card is dead state on a deactivated user; take it back.
+                # The card is dead state on a deactivated user; force-reassign it
+                # to this member. (It can't be unbound from the disabled holder
+                # first — UniFi 404s card mutations on a deactivated account.)
                 logger.warning(
                     "card %s is bound to disabled %s; reclaiming it for this member",
                     _redact(card_id),
                     _describe_card_holder(holder),
                 )
-                self._request(
-                    "DELETE",
-                    f"/api/v1/developer/users/{holder.user_id}/nfc_cards/delete",
-                    json={"token": token},
-                )
-                time.sleep(self._INTER_CALL_DELAY_SECONDS)
-                self._put_bind_card(user_id, token)
+                self._put_bind_card(user_id, token, force_add=True)
                 # The card has moved; drop the stale holder so a later same-cycle
                 # lookup on this token doesn't misreport it.
                 self._holder_by_token.pop(token, None)
@@ -734,6 +740,21 @@ class UnifiClient:
                     unifi_user.contact_id,
                 )
                 continue
+            # Free the departed member's card(s) *before* deactivating, so the
+            # number can be reassigned. This must happen while the account is
+            # still active: UniFi rejects card mutations on a deactivated user
+            # (HTTP 404 "no-man zone"). Best-effort — a cleanup failure must not
+            # block cutting access; any card left behind is reclaimed (force_add)
+            # when the number is next assigned (see _bind_nfc_card).
+            try:
+                self._delete_cards_for_contact(user_id, unifi_user.contact_id)
+            except UnifiClientError as card_exc:
+                logger.warning(
+                    "contact %d: could not free card before deactivation (%s); "
+                    "it will be reclaimed when the number is next assigned",
+                    unifi_user.contact_id,
+                    card_exc,
+                )
             try:
                 self._request(
                     "PUT",
@@ -741,14 +762,6 @@ class UnifiClient:
                     json={"status": "DEACTIVATED"},
                 )
                 time.sleep(self._INTER_CALL_DELAY_SECONDS)
-                # Free the departed member's card(s) so the number can be
-                # reassigned. A deactivated user that kept its card would hold it
-                # indefinitely, and a recycled card could never be bound to the
-                # new member (CODE_CREDS_NFC_HAS_BIND_USER). Deactivation (cutting
-                # access) runs first so a card-delete failure never leaves an
-                # active record; if a delete fails here it's recorded and alerts,
-                # and any leftover binding is surfaced by _bind_nfc_card on reuse.
-                self._delete_cards_for_contact(user_id, unifi_user.contact_id)
             except UnifiClientError as exc:
                 self._record_apply_failure(unifi_user.contact_id, exc)
                 continue

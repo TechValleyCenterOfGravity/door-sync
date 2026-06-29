@@ -1122,7 +1122,11 @@ def test_apply_deactivate_sets_status(
 def test_apply_deactivate_removes_nfc_card(
     httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch, make_client: Callable[..., UnifiClient]
 ) -> None:
-    """Deactivating a carded user also DELETEs the card so it can be reused."""
+    """Deactivating a carded user frees the card (DELETE) before setting status.
+
+    The card must be removed while the account is still active — UniFi rejects
+    card mutations on a deactivated user.
+    """
     monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
 
     client = make_client()
@@ -1156,14 +1160,20 @@ def test_apply_deactivate_removes_nfc_card(
 
     client.apply(_diff(to_deactivate=(fetched[0],)))
 
-    # Status set to DEACTIVATED ...
+    writes = [
+        (r.method, r.url.path) for r in httpx_mock.get_requests() if r.method in ("PUT", "DELETE")
+    ]
+    # The card is freed first (while active), then the account is deactivated.
+    assert writes == [
+        ("DELETE", "/api/v1/developer/users/uuid-42/nfc_cards/delete"),
+        ("PUT", "/api/v1/developer/users/uuid-42"),
+    ]
     put_req = next(
         r
         for r in httpx_mock.get_requests()
         if r.method == "PUT" and r.url.path.endswith("/users/uuid-42")
     )
     assert _json.loads(put_req.content) == {"status": "DEACTIVATED"}
-    # ... and the card freed for reuse.
     delete_req = next(
         r
         for r in httpx_mock.get_requests()
@@ -1308,13 +1318,8 @@ def test_apply_bind_conflict_reclaims_card_from_disabled_holder(
             "data": None,
         },
     )
-    # ... door-sync unbinds it from the disabled holder ...
-    httpx_mock.add_response(
-        method="DELETE",
-        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-5000/nfc_cards/delete",
-        json={"code": "SUCCESS", "msg": "success", "data": None},
-    )
-    # ... then the retried bind succeeds.
+    # ... so door-sync force-reassigns it (the card can't be DELETEd off a
+    # deactivated user); the forced bind succeeds.
     httpx_mock.add_response(
         method="PUT",
         url="https://192.0.2.1:12445/api/v1/developer/users/uuid-7590/nfc_cards",
@@ -1326,18 +1331,18 @@ def test_apply_bind_conflict_reclaims_card_from_disabled_holder(
         # No raise: the card is reclaimed and bound.
         client.apply(_diff(to_update_credential=((resolved, target),)))
 
-    # The card was unbound from the disabled holder ...
-    delete_req = next(
-        r for r in httpx_mock.get_requests() if r.method == "DELETE" and "uuid-5000" in r.url.path
-    )
-    assert _json.loads(delete_req.content) == {"token": "tok-1234"}
-    # ... and bound to 7590 twice (the rejected attempt + the successful retry).
+    # No DELETE is attempted — card mutations on a deactivated user are rejected.
+    assert not [r for r in httpx_mock.get_requests() if r.method == "DELETE"]
+    # Two binds to 7590: the rejected force_add=false, then a force_add=true retry.
     binds = [
-        r
+        _json.loads(r.content)
         for r in httpx_mock.get_requests()
         if r.method == "PUT" and r.url.path.endswith("/users/uuid-7590/nfc_cards")
     ]
-    assert len(binds) == 2
+    assert binds == [
+        {"token": "tok-1234", "force_add": False},
+        {"token": "tok-1234", "force_add": True},
+    ]
     # The reclaim is logged and redacted (last-4 only).
     logged = "\n".join(r.getMessage() for r in caplog.records)
     assert "reclaiming" in logged
@@ -2127,11 +2132,11 @@ def test_apply_executes_deactivate_update_credential_update_policy_add_order(
         if r.method in ("PUT", "POST", "DELETE")
         and "/credentials/nfc_cards/import" not in r.url.path
     ]
-    # Expected order: deactivate(100) sets status then frees its card,
-    # update_credential(101 DELETE then PUT card), update_policy(102).
+    # Expected order: deactivate(100) frees its card (while active) then sets
+    # status, update_credential(101 DELETE then PUT card), update_policy(102).
     assert write_path_methods == [
-        ("PUT", "/api/v1/developer/users/u100"),
         ("DELETE", "/api/v1/developer/users/u100/nfc_cards/delete"),
+        ("PUT", "/api/v1/developer/users/u100"),
         ("DELETE", "/api/v1/developer/users/u101/nfc_cards/delete"),
         ("PUT", "/api/v1/developer/users/u101/nfc_cards"),
         ("PUT", "/api/v1/developer/users/u102/access_policies"),
