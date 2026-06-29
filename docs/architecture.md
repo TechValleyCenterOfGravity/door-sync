@@ -148,7 +148,8 @@ class CiviMember:
     contact_id: int
     display_name: str
     card_id: int | None
-    membership_types: list[str]     # all active types for this contact
+    membership_types: tuple[str, ...]  # all active types for this contact
+    email: str | None = None
 
 @dataclass(frozen=True)
 class ResolvedMember:
@@ -157,6 +158,7 @@ class ResolvedMember:
     card_id: int | None
     target_policy: str | None       # None when resolution != "tier"
     resolution: Literal["tier", "none", "day-pass", "unmapped"]
+    email: str | None = None
 
 @dataclass(frozen=True)
 class UnifiUser:
@@ -165,6 +167,7 @@ class UnifiUser:
     card_id: int | None
     active: bool
     policy: str | None
+    email: str | None = None
 
 @dataclass(frozen=True)
 class Diff:
@@ -188,7 +191,7 @@ class ReconcileResult:
 
 **Reconciliation key:** `contact_id`, persisted in UniFi Access's `employee_number` field. Card ID is not a stable key (cards get reissued).
 
-**Naming note:** `to_update_credential` covers both card_id changes *and* display_name changes, matching the design guide §7. The display_name isn't strictly a "credential" but lives on the same UniFi user record; keeping it in one diff set avoids splitting writes that target the same API endpoint.
+**Naming note:** `to_update_credential` covers both card_id changes *and* display_name changes, matching the design guide §7. The display_name isn't strictly a "credential" but lives on the same UniFi user record; keeping it in one diff set avoids splitting writes that target the same API endpoint. The `email` field rides `to_update_credential` for the same reason as `display_name`: it is written via the same `PUT /users/{id}` endpoint. It is compared case-insensitively so harmless case differences don't churn.
 
 **When extending the model:**
 

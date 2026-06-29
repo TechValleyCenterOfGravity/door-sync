@@ -2,8 +2,10 @@ from door_sync.models import CiviMember, ResolvedMember, TierMapping, TierRule
 from door_sync.tier_mapping import resolve, resolve_all
 
 
-def _civi(types: tuple[str, ...]) -> CiviMember:
-    return CiviMember(contact_id=1, display_name="A", card_id=42, membership_types=types)
+def _civi(types: tuple[str, ...], email: str | None = "m@example.com") -> CiviMember:
+    return CiviMember(
+        contact_id=1, display_name="A", card_id=42, membership_types=types, email=email
+    )
 
 
 def test_single_tier_match() -> None:
@@ -106,3 +108,40 @@ def test_resolve_all_preserves_order() -> None:
     results = resolve_all(members, mapping)
     assert [r.contact_id for r in results] == [1, 2, 3]
     assert all(isinstance(r, ResolvedMember) for r in results)
+
+
+def test_email_passes_through_on_tier_match() -> None:
+    mapping = TierMapping(
+        rules={"Gold": TierRule(resolution="tier", target_policy="P_GOLD", rank=10)}
+    )
+    result = resolve(_civi(("Gold",), email="gold@example.com"), mapping)
+    assert result.email == "gold@example.com"
+
+
+def test_email_passes_through_on_none_resolution() -> None:
+    mapping = TierMapping(rules={"Comp": TierRule(resolution="none", target_policy=None, rank=1)})
+    result = resolve(_civi(("Comp",), email="comp@example.com"), mapping)
+    assert result.email == "comp@example.com"
+
+
+def test_email_passes_through_on_no_memberships() -> None:
+    result = resolve(_civi((), email="empty@example.com"), TierMapping(rules={}))
+    assert result.resolution == "none"
+    assert result.email == "empty@example.com"
+
+
+def test_email_passes_through_on_unmapped() -> None:
+    mapping = TierMapping(
+        rules={"Gold": TierRule(resolution="tier", target_policy="P_GOLD", rank=10)}
+    )
+    result = resolve(_civi(("Silver",), email="silver@example.com"), mapping)
+    assert result.resolution == "unmapped"
+    assert result.email == "silver@example.com"
+
+
+def test_email_none_passes_through() -> None:
+    mapping = TierMapping(
+        rules={"Gold": TierRule(resolution="tier", target_policy="P_GOLD", rank=10)}
+    )
+    result = resolve(_civi(("Gold",), email=None), mapping)
+    assert result.email is None

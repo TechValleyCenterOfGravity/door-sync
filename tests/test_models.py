@@ -93,3 +93,42 @@ def test_dataclass_equality_round_trips() -> None:
     a = CiviMember(contact_id=1, display_name="A", card_id=42, membership_types=("X",))
     b = CiviMember(contact_id=1, display_name="A", card_id=42, membership_types=("X",))
     assert a == b
+
+
+def test_civi_member_email_defaults_none_and_accepts_value() -> None:
+    m = CiviMember(contact_id=1, display_name="A", card_id=10, membership_types=("Gold",))
+    assert m.email is None
+
+    m2 = CiviMember(
+        contact_id=1,
+        display_name="A",
+        card_id=10,
+        membership_types=("Gold",),
+        email="a@example.com",
+    )
+    assert m2.email == "a@example.com"
+
+
+def test_resolved_member_email_defaults_none_and_accepts_value() -> None:
+    r = ResolvedMember(
+        contact_id=1, display_name="A", card_id=10, target_policy="P", resolution="tier"
+    )
+    assert r.email is None
+    r2 = ResolvedMember(
+        contact_id=1,
+        display_name="A",
+        card_id=10,
+        target_policy="P",
+        resolution="tier",
+        email="a@example.com",
+    )
+    assert r2.email == "a@example.com"
+
+
+def test_unifi_user_email_defaults_none_and_accepts_value() -> None:
+    u = UnifiUser(contact_id=1, display_name="A", card_id=10, active=True, policy="P")
+    assert u.email is None
+    u2 = UnifiUser(
+        contact_id=1, display_name="A", card_id=10, active=True, policy="P", email="a@example.com"
+    )
+    assert u2.email == "a@example.com"
