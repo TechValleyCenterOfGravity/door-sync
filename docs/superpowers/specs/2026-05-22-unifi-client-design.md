@@ -149,7 +149,7 @@ Pagination follows the same shape as `CivicrmClient`: a `_MAX_PAGES = 1_000` cei
    - If empty: skip.
    - Else: assemble a CSV in memory (one row per missing card_id, no header row — see §9 for the exact format), `POST /api/v1/developer/credentials/nfc_cards/import` (multipart, field name `file`).
    - On success, parse the response's `data` array of `{nfc_id, token}` entries and merge into the token map.
-3. **Deactivate** (`PUT /users/:id` with body `{"status": "DEACTIVATED"}` for each entry in `diff.to_deactivate`).
+3. **Deactivate** — for each entry in `diff.to_deactivate`: `PUT /users/:id` with body `{"status": "DEACTIVATED"}`, then DELETE the user's cached NFC card(s) (`/users/:id/nfc_cards/delete`) so the card number is freed for reuse by a new member. Status first, card removal second: cutting access must not depend on the cleanup succeeding.
 4. **Update credential** — for each `(resolved, unifi_user)` in `diff.to_update_credential`:
    - If `display_name` changed: `PUT /users/:id` body `{first_name, last_name}` (split via `_split_name`).
    - If `card_id` changed:
@@ -398,5 +398,5 @@ Test changes: extend `_write_minimal_valid` in `tests/test_config.py` to include
 - **Retry budget of 3 / inter-call delay of 75ms.** Both are constants in `client.py`. Promotable to config fields if real-world tuning demands.
 - **Whether to compress the CSV upload.** Not done; CSVs are kilobyte-scale.
 - **First-name placeholder for single-word display names.** `"—"` (em-dash) — chosen to be visibly distinct in the UniFi UI so an operator notices and edits the CiviCRM record. Open to bikeshed.
-- **Whether `force_add: true` should ever be used.** Default `false` (don't steal a card from another user). If we ever need to forcibly re-bind, that's a separate operational flow with explicit human authorization.
+- **Whether `force_add: true` should ever be used.** Still `false` — door-sync never steals a card from another user. Recycled physical cards are instead freed at their *source*: deactivating a member now deletes their card (step 3), so the number is available the next time it's assigned. When a card is nonetheless still bound elsewhere (a member deactivated before this behavior shipped, or a manually-enrolled admin card), the bind fails as a per-user error that names the current holder, so an operator can free it deliberately rather than door-sync force-rebinding. A blanket `force_add: true` remains rejected because it would also clobber admin-managed bindings.
 - **Audit-log entries for UniFi calls.** Out of scope; `audit.py` (a separate slice) owns audit logging. The orchestrator passes the diff and the result there.

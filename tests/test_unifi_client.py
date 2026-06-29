@@ -1119,6 +1119,133 @@ def test_apply_deactivate_sets_status(
     assert body == {"status": "DEACTIVATED"}
 
 
+def test_apply_deactivate_removes_nfc_card(
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch, make_client: Callable[..., UnifiClient]
+) -> None:
+    """Deactivating a carded user also DELETEs the card so it can be reused."""
+    monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
+
+    client = make_client()
+
+    # Card list (token -> number) registered before fetch_users(), which resolves
+    # the carded user's number from its token.
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_card_tokens_page([(1234, "tok-1234")]),
+    )
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page([_user_row(contact_id=42, user_id="uuid-42", nfc_token="tok-1234")]),
+    )
+    fetched = client.fetch_users()
+
+    # Deactivate status write.
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+    # Card removal write.
+    httpx_mock.add_response(
+        method="DELETE",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42/nfc_cards/delete",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+
+    client.apply(_diff(to_deactivate=(fetched[0],)))
+
+    # Status set to DEACTIVATED ...
+    put_req = next(
+        r
+        for r in httpx_mock.get_requests()
+        if r.method == "PUT" and r.url.path.endswith("/users/uuid-42")
+    )
+    assert _json.loads(put_req.content) == {"status": "DEACTIVATED"}
+    # ... and the card freed for reuse.
+    delete_req = next(
+        r
+        for r in httpx_mock.get_requests()
+        if r.method == "DELETE" and r.url.path.endswith("/nfc_cards/delete")
+    )
+    assert _json.loads(delete_req.content) == {"token": "tok-1234"}
+
+
+def test_apply_bind_conflict_names_current_holder(
+    httpx_mock: HTTPXMock,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    make_client: Callable[..., UnifiClient],
+) -> None:
+    """A card bound to another UniFi user surfaces who holds it (log + alert)."""
+    monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
+
+    client = make_client()
+
+    # Card 1234 -> tok-1234 (registered before fetch_users()).
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_card_tokens_page([(1234, "tok-1234")]),
+    )
+    # A deactivated former member (5000) still holds tok-1234; the new member
+    # (7590) currently has no card and is being assigned card 1234 in CiviCRM.
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page(
+            [
+                _user_row(
+                    contact_id=5000,
+                    user_id="uuid-5000",
+                    first_name="Old",
+                    last_name="Member",
+                    status="DEACTIVATED",
+                    nfc_token="tok-1234",
+                ),
+                _user_row(
+                    contact_id=7590,
+                    user_id="uuid-7590",
+                    first_name="Member",
+                    last_name="7590",
+                ),
+            ]
+        ),
+    )
+    fetched = client.fetch_users()
+    target = next(u for u in fetched if u.contact_id == 7590)
+
+    # The bind for 7590 is rejected: card already bound to another user.
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-7590/nfc_cards",
+        json={
+            "code": "CODE_CREDS_NFC_HAS_BIND_USER",
+            "msg": "This NFC card is already assigned to another user.",
+            "data": None,
+        },
+    )
+
+    resolved = _resolved(contact_id=7590, card_id=1234)
+    with caplog.at_level(logging.ERROR, logger="door_sync.unifi.client"):
+        with pytest.raises(UnifiClientError) as exc_info:
+            client.apply(_diff(to_update_credential=((resolved, target),)))
+
+    msg = str(exc_info.value)
+    # The failing member and the current holder are both named.
+    assert "contact=7590" in msg
+    assert "contact=5000" in msg
+    assert "Old Member" in msg
+    assert "DEACTIVATED" in msg
+    # Card is redacted; the raw number never leaks except as the ****NNNN form.
+    assert "****1234" in msg
+    assert "1234" not in msg.replace("****1234", "")
+    # The per-contact error log carries the holder too (the operator's signal).
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert "contact=5000" in logged
+
+
 def test_apply_update_credential_swaps_card(
     httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch, make_client: Callable[..., UnifiClient]
 ) -> None:
@@ -1876,6 +2003,7 @@ def test_apply_executes_deactivate_update_credential_update_policy_add_order(
     # Pre-set generic SUCCESS responses for the writes.
     for url, method in [
         ("https://192.0.2.1:12445/api/v1/developer/users/u100", "PUT"),
+        ("https://192.0.2.1:12445/api/v1/developer/users/u100/nfc_cards/delete", "DELETE"),
         ("https://192.0.2.1:12445/api/v1/developer/users/u101/nfc_cards/delete", "DELETE"),
         ("https://192.0.2.1:12445/api/v1/developer/users/u101/nfc_cards", "PUT"),
         ("https://192.0.2.1:12445/api/v1/developer/users/u102/access_policies", "PUT"),
@@ -1899,10 +2027,11 @@ def test_apply_executes_deactivate_update_credential_update_policy_add_order(
         if r.method in ("PUT", "POST", "DELETE")
         and "/credentials/nfc_cards/import" not in r.url.path
     ]
-    # Expected order: deactivate(100), update_credential(101 DELETE then PUT card),
-    # update_policy(102).
+    # Expected order: deactivate(100) sets status then frees its card,
+    # update_credential(101 DELETE then PUT card), update_policy(102).
     assert write_path_methods == [
         ("PUT", "/api/v1/developer/users/u100"),
+        ("DELETE", "/api/v1/developer/users/u100/nfc_cards/delete"),
         ("DELETE", "/api/v1/developer/users/u101/nfc_cards/delete"),
         ("PUT", "/api/v1/developer/users/u101/nfc_cards"),
         ("PUT", "/api/v1/developer/users/u102/access_policies"),
