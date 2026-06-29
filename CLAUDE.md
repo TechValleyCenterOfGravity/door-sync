@@ -32,6 +32,7 @@ All tooling goes through `uv run` — the venv is managed by uv, not pip.
 - **Frozen dataclasses.** All domain models in `models.py` are `@dataclass(frozen=True)`. Never mutate; construct a new instance.
 - **Strict layering.** Nothing imports `orchestrator` except `scheduler` and (future) `webhook`. See dependency table in architecture.md §4.
 - **Card ID redaction.** Logs show last-4 only. Never log a full card ID at any level (architecture.md §11).
+- **No member names in logs/alerts.** Operational and audit log streams identify members by `contact_id` (and, for unmanaged UniFi accounts, user id) — never by name. CodeQL's `py/clear-text-logging-sensitive-data` flags `display_name` as PII. The interactive `show-diff` CLI may print names (direct operator output, not a log). See architecture/conventions.rst.
 - **Dry-run is sacred.** Dry-run flips a flag inside `UnifiClient` that turns writes into no-ops. Pure modules behave identically in dry-run and live — do not branch on dry-run in pure code.
 - **Fail-secure on safety guards.** Any guard firing means zero writes that cycle. No partial application.
 - **Crash logging uses `_logger.error("...", exc_info=exc)`, not `_logger.exception(...)`.** `exception()` reads `sys.exc_info()`, which is `(None, None, None)` outside an active `except` clause — the traceback would be silently dropped. Python 3.5+ accepts an exception instance directly via `exc_info=`. See `orchestrator.handle_crash` for the reference impl.

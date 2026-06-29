@@ -176,9 +176,32 @@
 
 1. In CiviCRM, expire or remove a test member's active membership (or clear their card ID).
 2. Run `show-diff` — confirm `to_deactivate`.
-3. Run `--once` — verify in UniFi admin: user is deactivated (not deleted, just inactive).
+3. Run `--once` — verify in UniFi admin: the user's NFC card is **removed** (freed for reuse) and the user is deactivated (not deleted, just inactive). The card delete is issued *before* the status change.
 
-### 4f. Full Sync
+### 4f. Card Reuse and Reclaim
+
+Validates that a recycled physical card can move to a new member — the path that
+previously crashed every cycle with `CODE_CREDS_NFC_HAS_BIND_USER`.
+
+**Recycled card, holder freed on deactivation:**
+
+1. Take member A holding card X in UniFi. Deactivate A (4e) and confirm card X was removed.
+2. In CiviCRM, assign card X to a different member B. Run `show-diff` (B in `to_add` or `to_update_credential`), then `--once`.
+3. Verify in UniFi admin: card X is bound to B, and B is active.
+
+**Reclaim from an already-disabled holder** (the production case — a card still
+stuck on a user that was deactivated *before* this behavior shipped):
+
+4. Arrange member C **deactivated** in UniFi but still holding card Y (set this up in the UniFi admin UI if needed).
+5. In CiviCRM, assign card Y to member D. Run `--once`.
+6. Verify the operational log shows a single `WARNING ... reclaiming it for this member` line — redacted card (`****NNNN`) and `contact=<id>`, **no member name** — and that UniFi admin now shows card Y bound to D. No alert/crash for D.
+
+**Active-holder guard** (door-sync must NOT displace an active user):
+
+7. Arrange card Z bound to an *active* UniFi account (e.g. a manually-enrolled admin). Assign card Z to a member in CiviCRM and run `--once`.
+8. Verify the cycle records a per-user failure that identifies the holder by id (not name) and leaves card Z on the active account untouched.
+
+### 4g. Full Sync
 
 1. Remove the tier rule restriction from step 4a — allow all membership types.
 2. Run `show-diff` to review the full diff.
@@ -188,6 +211,8 @@
 ### Pass Criteria
 
 - All five write operations work correctly: add user, bind NFC card, assign policy, update credential, deactivate user.
+- Deactivation frees the member's NFC card (the number becomes reusable).
+- A recycled card moves to its new member; a card stuck on a disabled holder is reclaimed (single redacted warning, no alert); a card on an *active* holder is left untouched with an actionable per-user error.
 - Idempotency holds after each operation (re-run produces empty diff).
 - Audit log and state file reflect each cycle accurately.
 - No duplicate users or credentials created.
