@@ -187,8 +187,19 @@ def make_client() -> Iterator[Callable[..., UnifiClient]]:
 
     Returns a factory. Every client it creates is closed after the test,
     even when an assertion raises mid-test, so the underlying httpx.Client
-    never leaks. Pass `config=` for a bespoke config, `dry_run=True` for a
-    dry-run client, or `cert=` to pin a non-default certificate.
+    never leaks.
+
+    Args (all optional):
+        config: a bespoke UnifiConfig. When omitted, a default config is
+            built and pinned to ``cert``.
+        dry_run: construct the client in dry-run mode.
+        cert: DER certificate the stubbed TLS layer presents during
+            fingerprint verification. The client validates it against
+            ``config.tls_fingerprint`` — so when you pass both ``config=``
+            and ``cert=``, the config's fingerprint must already match
+            ``cert`` or construction raises a TLS mismatch. (Passing
+            ``cert=`` alone is enough; the auto-built config is pinned to
+            it.)
     """
     created: list[UnifiClient] = []
 
