@@ -121,7 +121,10 @@ def test_raise_mailgun_sends_post(tmp_path: Path) -> None:
 
     mock_post.assert_called_once()
     call_kwargs = mock_post.call_args
-    assert "mg.example.com" in call_kwargs.args[0]
+    # Assert the exact Mailgun endpoint, not a loose substring: the domain must
+    # sit in the API path (https://api.mailgun.net/v3/<domain>/messages), which
+    # a substring check would not guarantee.
+    assert call_kwargs.args[0] == "https://api.mailgun.net/v3/mg.example.com/messages"
     assert call_kwargs.kwargs["auth"] == ("api", "key-test")
     assert call_kwargs.kwargs["data"]["subject"] == "[door-sync] ALERT"
     assert call_kwargs.kwargs["data"]["text"] == "safety halt"
