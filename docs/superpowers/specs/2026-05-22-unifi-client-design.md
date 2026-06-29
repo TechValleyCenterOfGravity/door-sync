@@ -125,9 +125,9 @@ For each row:
 - Build a `UnifiUser`:
   - `contact_id = int(employee_number)`
   - `display_name = " ".join([first_name, last_name]).strip()`
-  - `card_id = _parse_nfc_id(nfc_cards[0]["nfc_id"], config.facility_code)` — see §10; `None` if no cards, the nfc_id is unparseable, or its encoded FC differs from `config.facility_code`
+  - `card_id = _parse_nfc_id(nfc_cards[0]["nfc_id"], config.facility_code)` — see §10; `None` if no cards, the nfc_id is unparseable, or its encoded FC differs from `config.facility_code` — **[SUPERSEDED — see Correction (2026-06-29)]** `/users` cards have no `nfc_id`; `card_id` is recovered from the card `token` via the `sync-<card_id>` alias.
   - `active = status == "ACTIVE"`
-  - `policy = access_policy_ids[0]` — see §11; `None` if no policies
+  - `policy = access_policy_ids[0]` — see §11; `None` if no policies — **[SUPERSEDED — see Correction (2026-06-29)]** `policy` is now the single *managed* policy (filtered by `managed_policy_ids`), not the raw first.
 
 If a user has multiple cards or multiple policies, we use the first by `id`-ordered iteration and emit a `logger.warning("contact %d has %d cards/policies; using the first", …)` with redacted card-ID. This is operational drift the reconciler reports but does not auto-correct — the safety guards and human review handle it.
 
@@ -261,6 +261,8 @@ For matching, the reconciler compares CN integers, not hex strings — that side
 **Behavior on FC mismatch.** If a user has a card bound whose `nfc_id` decodes to a different facility code than `config.facility_code`, the reconciler treats that user as having no managed card (`UnifiUser.card_id = None`) and emits one `logger.warning("contact %d has foreign-FC card nfc_id=%s; skipping", contact_id, _redact(nfc_id))`. The next diff cycle will then try to add a card with the configured FC, which will either succeed (creating a second binding) or fail (UniFi rejects duplicates) — both outcomes are visible in the audit log. Manual intervention is the right resolution path; the reconciler does not silently rebind across facility codes.
 
 ## 11. Access policy handling
+
+> **[SUPERSEDED — see [Correction (2026-06-29)](#correction-2026-06-29--read-path-no-longer-uses-nfc_id-supersedes-8-9-10s-read-claims-and-11)].** The "use the first of `access_policy_ids`" rule below was replaced by managed-policy filtering: `UnifiClient` takes `managed_policy_ids` (the `tier_mapping` targets), reads only the managed policy (ignoring policies UniFi auto-applies to all users), and writes only the tier policy. The text below is retained for historical context.
 
 Each `ResolvedMember.target_policy` is a single string — the UniFi policy UUID. We push it as `{"access_policy_ids": [target_policy]}` (single-element list).
 

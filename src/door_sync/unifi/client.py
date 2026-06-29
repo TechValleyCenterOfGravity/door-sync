@@ -65,20 +65,28 @@ class UnifiClient:
             config: UniFi connection settings including host, API key, TLS fingerprint, and facility code.
             dry_run: If True, write operations log intended actions instead of executing them.
             managed_policy_ids: The set of access policy IDs door-sync owns (the
-                tier-mapping target policies). When provided, any policy on a
-                UniFi user that is not in this set is treated as externally
-                managed (e.g. a policy auto-applied to all users): it is ignored
-                when reading the user's current policy, and policy writes send
-                only the tier policy. An auto-applied policy is therefore left
-                for UniFi to re-apply rather than re-sent (which would convert it
-                into a manual per-user assignment); door-sync does not otherwise
-                preserve arbitrary unmanaged per-user policies on write. When
-                None/empty, every policy is treated as managed (legacy behavior:
-                take the first).
+                tier-mapping target policies). When a set is provided, any policy
+                on a UniFi user that is not in it is treated as externally managed
+                (e.g. a policy auto-applied to all users): it is ignored when
+                reading the user's current policy, and policy writes send only the
+                tier policy. An auto-applied policy is therefore left for UniFi to
+                re-apply rather than re-sent (which would convert it into a manual
+                per-user assignment); door-sync does not otherwise preserve
+                arbitrary unmanaged per-user policies on write. An explicit empty
+                set is authoritative — door-sync owns no policies, so all are
+                external. Passing None (the default) selects the legacy fallback:
+                every policy is treated as managed and the first is taken; it
+                exists for backward compatibility and for callers that don't
+                supply the tier set.
         """
         self._config = config
         self._dry_run = dry_run
-        self._managed_policy_ids: frozenset[str] = frozenset(managed_policy_ids or ())
+        # None (omitted) is the legacy sentinel — treat every policy as managed.
+        # Any provided set, including an empty one, is authoritative: an empty
+        # set means door-sync owns no policies, so all are external.
+        self._managed_policy_ids: frozenset[str] | None = (
+            None if managed_policy_ids is None else frozenset(managed_policy_ids)
+        )
         # Resolve hostname+port once so TLS verification and httpx requests
         # both target the same endpoint. Without this, a host like
         # "https://controller.example.org" (no port) would pin TLS on 12445
@@ -335,12 +343,12 @@ class UnifiClient:
         all_policies = [str(p) for p in raw_policies]
         # When a managed set is configured, only policies door-sync owns count as
         # "the user's policy"; anything else (e.g. a policy UniFi auto-applies to
-        # all users) is ignored so it isn't mistaken for tier drift. With no
-        # managed set, every policy is treated as managed (legacy behavior).
-        if self._managed_policy_ids:
-            managed = [p for p in all_policies if p in self._managed_policy_ids]
-        else:
+        # all users) is ignored so it isn't mistaken for tier drift. When no set
+        # was provided (None), every policy is treated as managed (legacy).
+        if self._managed_policy_ids is None:
             managed = all_policies
+        else:
+            managed = [p for p in all_policies if p in self._managed_policy_ids]
         if len(managed) > 1:
             logger.warning(
                 "contact %d has %d access policies; using the first",
@@ -892,10 +900,13 @@ def _parse_sync_alias(alias: str) -> int | None:
     """
     if not alias.startswith(_SYNC_ALIAS_PREFIX):
         return None
-    try:
-        return int(alias[len(_SYNC_ALIAS_PREFIX) :])
-    except ValueError:
+    suffix = alias[len(_SYNC_ALIAS_PREFIX) :]
+    # Require plain ASCII digits. `int()` alone would accept signs, surrounding
+    # whitespace, digit-group underscores, and non-ASCII digit characters — none
+    # of which is a card number door-sync ever wrote.
+    if not (suffix.isascii() and suffix.isdigit()):
         return None
+    return int(suffix)
 
 
 def _email_differs_ci(a: str | None, b: str | None) -> bool:

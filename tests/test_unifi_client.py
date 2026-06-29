@@ -77,6 +77,16 @@ def test_parse_sync_alias_non_sync_returns_none() -> None:
     assert _parse_sync_alias("sync-abc") is None
 
 
+def test_parse_sync_alias_rejects_non_digit_suffix() -> None:
+    """Only plain ASCII digits are a valid card number — int() would otherwise
+    accept signs, whitespace, and unicode digits."""
+    assert _parse_sync_alias("sync--5") is None  # signed
+    assert _parse_sync_alias("sync-+5") is None
+    assert _parse_sync_alias("sync- 12") is None  # whitespace-padded
+    assert _parse_sync_alias("sync-1_234") is None  # underscore digit grouping
+    assert _parse_sync_alias("sync-²") is None  # superscript two (unicode digit)
+
+
 # --- Name splitting ---
 
 
@@ -585,7 +595,8 @@ def test_fetch_users_warns_on_multiple_managed_policies(
     with caplog.at_level(logging.WARNING, logger="door_sync.unifi.client"):
         client = make_client(managed_policy_ids={"pol-1", "pol-2"})
         users = client.fetch_users()
-    assert users[0].policy in {"pol-1", "pol-2"}
+    # "use the first" — array order is ["pol-1", "pol-2"], so pol-1 wins.
+    assert users[0].policy == "pol-1"
     assert any("2 access policies" in rec.message for rec in caplog.records)
 
 
@@ -605,18 +616,54 @@ def test_fetch_users_unmanaged_only_yields_policy_none(
     assert users[0].policy is None
 
 
+def test_fetch_users_explicit_empty_managed_set_owns_no_policy(
+    httpx_mock: HTTPXMock, make_client: Callable[..., UnifiClient]
+) -> None:
+    """An explicit empty managed set means door-sync owns no policies, so every
+    policy is external and the user's policy reads as None. This is distinct from
+    omitting the argument (None), which keeps the legacy take-first behavior."""
+    row = _user_row(contact_id=42)
+    row["access_policy_ids"] = ["pol-1"]
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page([row]),
+    )
+    client = make_client(managed_policy_ids=set())
+    users = client.fetch_users()
+    assert users[0].policy is None
+
+
+def test_fetch_users_omitted_managed_set_uses_legacy_first_policy(
+    httpx_mock: HTTPXMock, make_client: Callable[..., UnifiClient]
+) -> None:
+    """Omitting managed_policy_ids (None) keeps the legacy behavior: the first
+    access policy is taken as the user's policy."""
+    row = _user_row(contact_id=42)
+    row["access_policy_ids"] = ["pol-1", "pol-2"]
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page([row]),
+    )
+    client = make_client()  # managed_policy_ids omitted -> None
+    users = client.fetch_users()
+    assert users[0].policy == "pol-1"
+
+
 def test_fetch_users_resolves_card_id_from_token_via_alias(
     httpx_mock: HTTPXMock, make_client: Callable[..., UnifiClient]
 ) -> None:
     """The /users endpoint returns a card's token (not its Wiegand nfc_id), so
     card_id is recovered by joining that token to the card list, whose alias
-    encodes the number (sync-<card_id>). Mirrors a real /users response."""
-    token = "6809495d4ce20dc39759640418d86386f1d05724edcc53b97c551507e4952a70"
+    encodes the number (sync-<card_id>). Mirrors the real /users card shape
+    ({id, token, type}) with synthetic values."""
+    token = "tok-card-1234-synthetic"  # opaque; only the token->alias join matters
     row = {
-        "id": "a64b4238-7df2-4d04-9156-5bbd03d0daa3",
-        "first_name": "Abigail",
-        "last_name": "Mathews",
-        "employee_number": "774",
+        "id": "uuid-synthetic-0001",
+        "first_name": "Jane",
+        "last_name": "Doe",
+        "employee_number": "42",
         "status": "ACTIVE",
         "nfc_cards": [{"id": "100025", "token": token, "type": "id_card"}],
         "access_policy_ids": [],
@@ -643,7 +690,7 @@ def test_fetch_users_resolves_card_id_from_token_via_alias(
     )
     client = make_client()
     users = client.fetch_users()
-    assert users[0].contact_id == 774
+    assert users[0].contact_id == 42
     assert users[0].card_id == 1234  # recovered via token -> alias "sync-01234"
 
 

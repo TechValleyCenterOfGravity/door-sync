@@ -281,6 +281,8 @@ A contact may appear in both `to_update_credential` and `to_update_policy` in th
 
 **Access policies (managed vs. external):** UniFi can auto-apply a policy to *all* users; such a policy then appears on every user's `access_policy_ids`. door-sync manages only the tier policies declared in `tier_mapping` — the set returned by `tier_mapping.managed_policy_ids()`, passed into `UnifiClient`. On read it ignores any unmanaged policy (so an auto-applied global policy is never mistaken for tier drift, which would otherwise queue every user into `to_update_policy` and trip the mass-policy guard). On write it sends *only* the tier policy — re-sending the global ID through the per-user endpoint would convert it into a manual per-user assignment.
 
+Backward compatibility: the `managed_policy_ids` argument is optional. Omitting it (passing `None`) selects the legacy fallback — every policy is treated as managed and the first is taken — which is how callers that predate the managed set behave. An *explicit* set (including an empty one) is authoritative; an empty set means door-sync owns no policies, so all are treated as external. The orchestrator and CLI always pass the derived set, so production runs are never on the legacy path.
+
 **Idempotency canary:** running `compute_diff` immediately after a successful `unifi.apply()` must produce a `Diff` with all empty sets. This is the canonical test for the algorithm — include it in the test suite.
 
 ---
