@@ -1119,6 +1119,398 @@ def test_apply_deactivate_sets_status(
     assert body == {"status": "DEACTIVATED"}
 
 
+def test_apply_deactivate_removes_nfc_card(
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch, make_client: Callable[..., UnifiClient]
+) -> None:
+    """Deactivating a carded user frees the card (DELETE) before setting status.
+
+    The card must be removed while the account is still active — UniFi rejects
+    card mutations on a deactivated user.
+    """
+    monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
+
+    client = make_client()
+
+    # Card list (token -> number) registered before fetch_users(), which resolves
+    # the carded user's number from its token.
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_card_tokens_page([(1234, "tok-1234")]),
+    )
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page([_user_row(contact_id=42, user_id="uuid-42", nfc_token="tok-1234")]),
+    )
+    fetched = client.fetch_users()
+
+    # Deactivate status write.
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+    # Card removal write.
+    httpx_mock.add_response(
+        method="DELETE",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42/nfc_cards/delete",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+
+    client.apply(_diff(to_deactivate=(fetched[0],)))
+
+    writes = [
+        (r.method, r.url.path) for r in httpx_mock.get_requests() if r.method in ("PUT", "DELETE")
+    ]
+    # The card is freed first (while active), then the account is deactivated.
+    assert writes == [
+        ("DELETE", "/api/v1/developer/users/uuid-42/nfc_cards/delete"),
+        ("PUT", "/api/v1/developer/users/uuid-42"),
+    ]
+    put_req = next(
+        r
+        for r in httpx_mock.get_requests()
+        if r.method == "PUT" and r.url.path.endswith("/users/uuid-42")
+    )
+    assert _json.loads(put_req.content) == {"status": "DEACTIVATED"}
+    delete_req = next(
+        r
+        for r in httpx_mock.get_requests()
+        if r.method == "DELETE" and r.url.path.endswith("/nfc_cards/delete")
+    )
+    assert _json.loads(delete_req.content) == {"token": "tok-1234"}
+
+
+def test_apply_bind_conflict_active_holder_names_and_raises(
+    httpx_mock: HTTPXMock,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    make_client: Callable[..., UnifiClient],
+) -> None:
+    """A card held by an *active* user is left alone; the error names the holder."""
+    monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
+
+    client = make_client()
+
+    # Card 1234 -> tok-1234. Fetched during apply (no managed carded row to
+    # trigger it during fetch_users); registration order is irrelevant.
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_card_tokens_page([(1234, "tok-1234")]),
+    )
+    # An ACTIVE, manually-enrolled admin user (no employee_number → not
+    # sync-managed) holds tok-1234. The new member (7590) has no card and is
+    # being assigned card 1234. door-sync must NOT steal from an active holder.
+    admin_holder = {
+        "id": "uuid-admin",
+        "first_name": "Front",
+        "last_name": "Desk",
+        "employee_number": "",
+        "status": "ACTIVE",
+        "nfc_cards": [{"id": "200001", "token": "tok-1234", "type": "id_card"}],
+        "access_policy_ids": ["pol-1"],
+    }
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page(
+            [
+                admin_holder,
+                _user_row(
+                    contact_id=7590,
+                    user_id="uuid-7590",
+                    first_name="Member",
+                    last_name="7590",
+                ),
+            ]
+        ),
+    )
+    fetched = client.fetch_users()
+    target = next(u for u in fetched if u.contact_id == 7590)
+
+    # The bind for 7590 is rejected: card already bound to another user.
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-7590/nfc_cards",
+        json={
+            "code": "CODE_CREDS_NFC_HAS_BIND_USER",
+            "msg": "This NFC card is already assigned to another user.",
+            "data": None,
+        },
+    )
+
+    resolved = _resolved(contact_id=7590, card_id=1234)
+    with caplog.at_level(logging.ERROR, logger="door_sync.unifi.client"):
+        with pytest.raises(UnifiClientError) as exc_info:
+            client.apply(_diff(to_update_credential=((resolved, target),)))
+
+    # No reclaim: the active holder's card is never deleted.
+    assert not [r for r in httpx_mock.get_requests() if r.method == "DELETE"]
+
+    msg = str(exc_info.value)
+    # The failing member and the current holder are both identified — by id, not
+    # by the holder's name (member PII must stay out of logs/alerts).
+    assert "contact=7590" in msg
+    assert "non-sync UniFi user (id=uuid-admin" in msg
+    assert "ACTIVE" in msg
+    assert "Front Desk" not in msg
+    # Card is redacted; the raw number never leaks except as the ****NNNN form.
+    assert "****1234" in msg
+    assert "1234" not in msg.replace("****1234", "")
+    # The per-contact error log carries the holder too (the operator's signal).
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert "uuid-admin" in logged
+    assert "Front Desk" not in logged
+
+
+def test_apply_bind_conflict_reclaims_card_from_disabled_holder(
+    httpx_mock: HTTPXMock,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    make_client: Callable[..., UnifiClient],
+) -> None:
+    """A card stuck on a *disabled* user is reclaimed and bound to the new member."""
+    monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
+
+    client = make_client()
+
+    # Card 1234 -> tok-1234 (fetched during fetch_users() via the carded holder).
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_card_tokens_page([(1234, "tok-1234")]),
+    )
+    # A deactivated former member (5000) still holds tok-1234 — e.g. deactivated
+    # before cards were freed on deactivation. The new member (7590) is assigned
+    # card 1234 in CiviCRM.
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page(
+            [
+                _user_row(
+                    contact_id=5000,
+                    user_id="uuid-5000",
+                    first_name="Old",
+                    last_name="Member",
+                    status="DEACTIVATED",
+                    nfc_token="tok-1234",
+                ),
+                _user_row(
+                    contact_id=7590,
+                    user_id="uuid-7590",
+                    first_name="Member",
+                    last_name="7590",
+                ),
+            ]
+        ),
+    )
+    fetched = client.fetch_users()
+    target = next(u for u in fetched if u.contact_id == 7590)
+
+    # First bind for 7590 is rejected (card still on the disabled user) ...
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-7590/nfc_cards",
+        json={
+            "code": "CODE_CREDS_NFC_HAS_BIND_USER",
+            "msg": "This NFC card is already assigned to another user.",
+            "data": None,
+        },
+    )
+    # ... so door-sync force-reassigns it (the card can't be DELETEd off a
+    # deactivated user); the forced bind succeeds.
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-7590/nfc_cards",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+
+    resolved = _resolved(contact_id=7590, card_id=1234)
+    with caplog.at_level(logging.WARNING, logger="door_sync.unifi.client"):
+        # No raise: the card is reclaimed and bound.
+        client.apply(_diff(to_update_credential=((resolved, target),)))
+
+    # No DELETE is attempted — card mutations on a deactivated user are rejected.
+    assert not [r for r in httpx_mock.get_requests() if r.method == "DELETE"]
+    # Two binds to 7590: the rejected force_add=false, then a force_add=true retry.
+    binds = [
+        _json.loads(r.content)
+        for r in httpx_mock.get_requests()
+        if r.method == "PUT" and r.url.path.endswith("/users/uuid-7590/nfc_cards")
+    ]
+    assert binds == [
+        {"token": "tok-1234", "force_add": False},
+        {"token": "tok-1234", "force_add": True},
+    ]
+    # The reclaim is logged and redacted (last-4 only); no member name leaks.
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert "reclaiming" in logged
+    assert "contact=5000" in logged
+    assert "Old Member" not in logged
+    assert "****1234" in logged
+    assert "1234" not in logged.replace("****1234", "")
+    # The moved card is forgotten on the holder's cached list, so a later
+    # same-cycle op on contact 5000 won't try to DELETE a token it no longer owns.
+    holder_cards = client._nfc_cards_by_contact.get(5000, [])
+    assert all(c.get("token") != "tok-1234" for c in holder_cards)
+
+
+def test_apply_bind_conflict_holder_with_null_status_is_not_reclaimed(
+    httpx_mock: HTTPXMock,
+    monkeypatch: pytest.MonkeyPatch,
+    make_client: Callable[..., UnifiClient],
+) -> None:
+    """A holder whose status is JSON null is treated as unknown, not disabled.
+
+    A null status must not become the string "None" and read as disabled — that
+    would force-reclaim a card from a holder whose state we couldn't confirm.
+    """
+    monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
+
+    client = make_client()
+
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_card_tokens_page([(1234, "tok-1234")]),
+    )
+    # Holder 8000 has a JSON-null status (unknown), and holds tok-1234.
+    null_status_holder = {
+        "id": "uuid-8000",
+        "first_name": "Null",
+        "last_name": "Status",
+        "employee_number": "8000",
+        "status": None,
+        "nfc_cards": [{"id": "300001", "token": "tok-1234", "type": "id_card"}],
+        "access_policy_ids": ["pol-1"],
+    }
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page(
+            [
+                null_status_holder,
+                _user_row(
+                    contact_id=7590, user_id="uuid-7590", first_name="Member", last_name="7590"
+                ),
+            ]
+        ),
+    )
+    fetched = client.fetch_users()
+    target = next(u for u in fetched if u.contact_id == 7590)
+
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-7590/nfc_cards",
+        json={
+            "code": "CODE_CREDS_NFC_HAS_BIND_USER",
+            "msg": "This NFC card is already assigned to another user.",
+            "data": None,
+        },
+    )
+
+    resolved = _resolved(contact_id=7590, card_id=1234)
+    with pytest.raises(UnifiClientError) as exc_info:
+        client.apply(_diff(to_update_credential=((resolved, target),)))
+
+    # Not reclaimed: exactly one bind (force_add=false), no force_add retry.
+    binds = [
+        _json.loads(r.content)
+        for r in httpx_mock.get_requests()
+        if r.method == "PUT" and r.url.path.endswith("/users/uuid-7590/nfc_cards")
+    ]
+    assert binds == [{"token": "tok-1234", "force_add": False}]
+    # Holder is named (unknown status), not force-stolen from.
+    assert "contact=8000" in str(exc_info.value)
+
+
+def test_deactivate_with_failed_card_delete_allows_same_cycle_reclaim(
+    httpx_mock: HTTPXMock,
+    monkeypatch: pytest.MonkeyPatch,
+    make_client: Callable[..., UnifiClient],
+) -> None:
+    """A failed card delete during deactivation still permits a same-cycle reclaim.
+
+    The holder cache is refreshed to DEACTIVATED after the status change, so the
+    still-bound card is force-reclaimed rather than mis-read as the stale ACTIVE
+    snapshot captured at fetch time.
+    """
+    monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
+
+    client = make_client()
+
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_card_tokens_page([(1234, "tok-1234")]),
+    )
+    # H (5000) is ACTIVE and holds tok-1234 and is departing; M (7590) is being
+    # assigned that same card this cycle.
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page(
+            [
+                _user_row(contact_id=5000, user_id="uuid-5000", nfc_token="tok-1234"),
+                _user_row(
+                    contact_id=7590, user_id="uuid-7590", first_name="Member", last_name="7590"
+                ),
+            ]
+        ),
+    )
+    fetched = client.fetch_users()
+    holder = next(u for u in fetched if u.contact_id == 5000)
+    target = next(u for u in fetched if u.contact_id == 7590)
+
+    # The pre-deactivation card delete fails (error envelope) ...
+    httpx_mock.add_response(
+        method="DELETE",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-5000/nfc_cards/delete",
+        json={"code": "CODE_NOT_FOUND", "msg": "no-man zone", "data": None},
+    )
+    # ... but the deactivation status change succeeds.
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-5000",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+    # M's bind: rejected (card still on the now-deactivated H), then force-reclaimed.
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-7590/nfc_cards",
+        json={
+            "code": "CODE_CREDS_NFC_HAS_BIND_USER",
+            "msg": "This NFC card is already assigned to another user.",
+            "data": None,
+        },
+    )
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-7590/nfc_cards",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+
+    diff = _diff(
+        to_deactivate=(holder,),
+        to_update_credential=((_resolved(7590, card_id=1234), target),),
+    )
+    # No raise: the still-bound card is reclaimed despite the failed delete.
+    client.apply(diff)
+
+    binds = [
+        _json.loads(r.content)
+        for r in httpx_mock.get_requests()
+        if r.method == "PUT" and r.url.path.endswith("/users/uuid-7590/nfc_cards")
+    ]
+    assert binds == [
+        {"token": "tok-1234", "force_add": False},
+        {"token": "tok-1234", "force_add": True},
+    ]
+
+
 def test_apply_update_credential_swaps_card(
     httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch, make_client: Callable[..., UnifiClient]
 ) -> None:
@@ -1876,6 +2268,7 @@ def test_apply_executes_deactivate_update_credential_update_policy_add_order(
     # Pre-set generic SUCCESS responses for the writes.
     for url, method in [
         ("https://192.0.2.1:12445/api/v1/developer/users/u100", "PUT"),
+        ("https://192.0.2.1:12445/api/v1/developer/users/u100/nfc_cards/delete", "DELETE"),
         ("https://192.0.2.1:12445/api/v1/developer/users/u101/nfc_cards/delete", "DELETE"),
         ("https://192.0.2.1:12445/api/v1/developer/users/u101/nfc_cards", "PUT"),
         ("https://192.0.2.1:12445/api/v1/developer/users/u102/access_policies", "PUT"),
@@ -1899,9 +2292,10 @@ def test_apply_executes_deactivate_update_credential_update_policy_add_order(
         if r.method in ("PUT", "POST", "DELETE")
         and "/credentials/nfc_cards/import" not in r.url.path
     ]
-    # Expected order: deactivate(100), update_credential(101 DELETE then PUT card),
-    # update_policy(102).
+    # Expected order: deactivate(100) frees its card (while active) then sets
+    # status, update_credential(101 DELETE then PUT card), update_policy(102).
     assert write_path_methods == [
+        ("DELETE", "/api/v1/developer/users/u100/nfc_cards/delete"),
         ("PUT", "/api/v1/developer/users/u100"),
         ("DELETE", "/api/v1/developer/users/u101/nfc_cards/delete"),
         ("PUT", "/api/v1/developer/users/u101/nfc_cards"),

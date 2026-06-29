@@ -17,6 +17,7 @@ import socket
 import ssl
 import time
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass, replace
 from types import TracebackType
 from typing import Any
 from urllib.parse import urlsplit
@@ -33,6 +34,10 @@ _PAGE_SIZE = 100
 # Cap on per-contact detail lines in an apply()-failure summary, so a
 # widespread failure doesn't produce an unbounded error/alert message.
 _MAX_FAILURE_DETAIL = 10
+# UniFi rejects a card bind when the card's token is already bound to a
+# different user. door-sync binds with force_add=false (never silently steal a
+# card), so this code surfaces and, where possible, names the current holder.
+_CODE_NFC_HAS_BIND_USER = "CODE_CREDS_NFC_HAS_BIND_USER"
 # Alias door-sync stamps on every card it imports, encoding the card number.
 # Neither read endpoint returns the Wiegand `nfc_id`: /users gives each card's
 # `token` (plus a display `id`), and the card list (/credentials/nfc_cards/
@@ -54,6 +59,21 @@ class UnifiClientError(Exception):
     def __init__(self, message: str, *, code: str | None = None) -> None:
         super().__init__(message)
         self.code = code
+
+
+@dataclass(frozen=True)
+class _CardHolder:
+    """Who a card token is currently bound to in UniFi.
+
+    Captured for every user during ``fetch_users()`` — sync-managed or not —
+    purely so a bind conflict (``CODE_CREDS_NFC_HAS_BIND_USER``) can identify the
+    current holder in the failure and alert. Identifies by id only — never the
+    member's name (PII stays out of logs) or the card number (architecture §11).
+    """
+
+    user_id: str
+    employee_number: str
+    status: str
 
 
 class UnifiClient:
@@ -124,6 +144,10 @@ class UnifiClient:
         # identifier the /users endpoint exposes) -> its card number. Populated
         # alongside `_nfc_token_map` so reads can resolve a user's card.
         self._card_id_by_token: dict[str, int] = {}
+        # token -> who currently holds that card in UniFi, recorded for every
+        # user (sync-managed or not) during fetch_users(). Used only to name the
+        # current holder when a bind is rejected with CODE_CREDS_NFC_HAS_BIND_USER.
+        self._holder_by_token: dict[str, _CardHolder] = {}
         self._fetched_users_done = False
 
     def _verify_tls_fingerprint(self) -> None:
@@ -288,6 +312,7 @@ class UnifiClient:
                     f"expected list of users from /users, got {type(data).__name__}"
                 )
             for row in data:
+                self._record_card_holders(row)
                 user = self._row_to_unifi_user(row)
                 if user is not None:
                     results.append(user)
@@ -388,6 +413,37 @@ class UnifiClient:
             policy=policy,
             email=email,
         )
+
+    def _record_card_holders(self, row: dict[str, Any]) -> None:
+        """Record which UniFi user holds each card token in this row.
+
+        Runs for *every* /users row, including admin-managed users without an
+        `employee_number` (which `_row_to_unifi_user` drops), so a later bind
+        conflict can identify whoever currently holds the card. Diagnostic only —
+        it never affects reconciliation.
+
+        Uses ``or ""`` rather than ``.get(k, "")`` throughout: a JSON ``null``
+        field would otherwise stringify to ``"None"``, which would record a bogus
+        token and — worse — make ``_holder_is_disabled`` read an unknown status
+        as disabled (and so eligible for force-reclaim).
+
+        Args:
+            row: Raw user dict from the UniFi API.
+        """
+        cards = row.get("nfc_cards") or []
+        if not isinstance(cards, list):
+            return
+        holder = _CardHolder(
+            user_id=str(row.get("id") or ""),
+            employee_number=str(row.get("employee_number") or ""),
+            status=str(row.get("status") or ""),
+        )
+        for card in cards:
+            if not isinstance(card, dict):
+                continue
+            token = str(card.get("token") or "")
+            if token:
+                self._holder_by_token[token] = holder
 
     def apply(self, diff: Diff) -> None:
         """Apply a diff to UniFi Access.
@@ -528,18 +584,8 @@ class UnifiClient:
             time.sleep(self._INTER_CALL_DELAY_SECONDS)
 
         if resolved.card_id != unifi_user.card_id:
-            # Delete old card(s) on the user.
-            for old_card in self._nfc_cards_by_contact.get(resolved.contact_id, []):
-                old_token = str(old_card.get("token", ""))
-                if not old_token:
-                    continue
-                self._request(
-                    "DELETE",
-                    f"/api/v1/developer/users/{user_id}/nfc_cards/delete",
-                    json={"token": old_token},
-                )
-                time.sleep(self._INTER_CALL_DELAY_SECONDS)
-            # Bind new card if specified.
+            # Delete old card(s) on the user, then bind the new one if specified.
+            self._delete_cards_for_contact(user_id, resolved.contact_id)
             if resolved.card_id is not None:
                 new_token = self._ensure_nfc_token_map().get(resolved.card_id)
                 if new_token is None:
@@ -547,12 +593,158 @@ class UnifiClient:
                         f"no token for card_id={_redact(resolved.card_id)} "
                         f"after import (contact={resolved.contact_id})"
                     )
-                self._request(
-                    "PUT",
-                    f"/api/v1/developer/users/{user_id}/nfc_cards",
-                    json={"token": new_token, "force_add": False},
+                self._bind_nfc_card(user_id, new_token, resolved.card_id)
+
+    def _delete_cards_for_contact(
+        self, user_id: str, contact_id: int, *, keep_token: str | None = None
+    ) -> None:
+        """Delete a contact's cached NFC cards, freeing each for reuse.
+
+        Args:
+            user_id: UniFi user identifier whose cards are removed.
+            contact_id: Contact whose cached card list (from fetch_users) is read.
+            keep_token: A token to preserve — e.g. a card about to be re-bound to
+                the same user; any card matching it is left in place.
+        """
+        for old_card in self._nfc_cards_by_contact.get(contact_id, []):
+            old_token = str(old_card.get("token", ""))
+            if not old_token or old_token == keep_token:
+                continue
+            self._request(
+                "DELETE",
+                f"/api/v1/developer/users/{user_id}/nfc_cards/delete",
+                json={"token": old_token},
+            )
+            time.sleep(self._INTER_CALL_DELAY_SECONDS)
+
+    def _put_bind_card(self, user_id: str, token: str, *, force_add: bool = False) -> None:
+        """Issue the raw card-bind request for one user.
+
+        ``force_add=False`` (default) never displaces another user. ``force_add=
+        True`` is used only to reclaim a card from a *disabled* holder: the card
+        cannot be unbound from a deactivated user (UniFi answers card mutations on
+        a deactivated account with HTTP 404 "no-man zone"), so the only way to
+        move it is to force the new bind, which reassigns it.
+        """
+        self._request(
+            "PUT",
+            f"/api/v1/developer/users/{user_id}/nfc_cards",
+            json={"token": token, "force_add": force_add},
+        )
+
+    def _bind_nfc_card(self, user_id: str, token: str, card_id: int) -> None:
+        """Bind an NFC card to a user, reclaiming it from a disabled holder.
+
+        door-sync binds with ``force_add=false`` so it never force-steals a card.
+        When UniFi rejects the bind because the card is already assigned
+        (``CODE_CREDS_NFC_HAS_BIND_USER``), the current holder is looked up from
+        the ``fetch_users()`` snapshot:
+
+        * If the holder is a *disabled* UniFi user, the card is theirs only as
+          dead state — door-sync force-reassigns it to this member (``force_add=
+          True``), so a recycled card stuck on a deactivated member is reclaimed
+          automatically. It cannot be unbound from the disabled holder first
+          (UniFi rejects card mutations on a deactivated user), so forcing the
+          new bind is the only path. The reclaim is logged (a warning), not
+          counted as a failure.
+        * Otherwise (an *active* user, or a holder not in the snapshot), the card
+          is left alone and the error is re-raised naming the holder, so the
+          alert is actionable.
+
+        The card number is redacted everywhere; only who holds it is disclosed
+        (architecture §11).
+
+        Args:
+            user_id: UniFi user the card should bind to.
+            token: Opaque UniFi card token to bind.
+            card_id: Numeric card id, for a redacted reference in logs/errors.
+
+        Raises:
+            UnifiClientError: If the bind fails and the card was not reclaimable.
+                On a bind-conflict the message is enriched with the current
+                holder; the original ``code`` is kept.
+        """
+        try:
+            self._put_bind_card(user_id, token)
+        except UnifiClientError as exc:
+            if exc.code != _CODE_NFC_HAS_BIND_USER:
+                raise
+            holder = self._holder_by_token.get(token)
+            if (
+                holder is not None
+                and holder.user_id
+                and holder.user_id != user_id
+                and _holder_is_disabled(holder)
+            ):
+                # The card is dead state on a deactivated user; force-reassign it
+                # to this member. (It can't be unbound from the disabled holder
+                # first — UniFi 404s card mutations on a deactivated account.)
+                logger.warning(
+                    "card %s is bound to disabled %s; reclaiming it for this member",
+                    _redact(card_id),
+                    _describe_card_holder(holder),
                 )
+                self._put_bind_card(user_id, token, force_add=True)
+                # The card has moved off the holder; forget it on both caches so a
+                # later same-cycle operation on the holder (e.g. a reactivation)
+                # doesn't try to DELETE a token it no longer owns.
+                self._holder_by_token.pop(token, None)
+                self._forget_holder_card(holder, token)
                 time.sleep(self._INTER_CALL_DELAY_SECONDS)
+                return
+            who = (
+                _describe_card_holder(holder)
+                if holder is not None
+                else "an unknown UniFi user (not in the fetched user list)"
+            )
+            raise UnifiClientError(
+                f"{exc} (card {_redact(card_id)} is currently bound to {who})",
+                code=exc.code,
+            ) from exc
+        time.sleep(self._INTER_CALL_DELAY_SECONDS)
+
+    def _forget_holder_card(self, holder: _CardHolder, token: str) -> None:
+        """Drop a reclaimed token from the holder's cached card list.
+
+        After a card is force-reassigned away from a disabled holder, that
+        holder's cached cards (from ``fetch_users()``) are stale. Only
+        sync-managed holders are cached by contact id; a non-sync holder has no
+        entry to prune.
+
+        Args:
+            holder: The disabled holder the card was reclaimed from.
+            token: The token that was moved to another user.
+        """
+        emp = holder.employee_number
+        if not (emp.isascii() and emp.isdigit()):
+            return
+        contact_id = int(emp)
+        cards = self._nfc_cards_by_contact.get(contact_id)
+        if not cards:
+            return
+        self._nfc_cards_by_contact[contact_id] = [
+            card for card in cards if str(card.get("token") or "") != token
+        ]
+
+    def _mark_holder_deactivated(self, contact_id: int, user_id: str) -> None:
+        """Refresh a just-deactivated user's cached card holders to DEACTIVATED.
+
+        ``_holder_by_token`` captures each holder's status at ``fetch_users()``
+        time (ACTIVE for a user now being deactivated). If the pre-deactivation
+        card delete failed, the card is still bound; without this refresh a
+        same-cycle reassignment of that number would read the stale ACTIVE
+        snapshot and refuse to reclaim. The ``user_id`` guard avoids touching a
+        token already moved to a different holder.
+
+        Args:
+            contact_id: The contact whose cached card holders are refreshed.
+            user_id: The deactivated user's id.
+        """
+        for card in self._nfc_cards_by_contact.get(contact_id, []):
+            token = str(card.get("token") or "")
+            holder = self._holder_by_token.get(token)
+            if holder is not None and holder.user_id == user_id:
+                self._holder_by_token[token] = replace(holder, status="DEACTIVATED")
 
     def _apply_update_policy(self, diff: Diff) -> None:
         for resolved, _unifi_user in diff.to_update_policy:
@@ -593,16 +785,35 @@ class UnifiClient:
                     unifi_user.contact_id,
                 )
                 continue
+            # Free the departed member's card(s) *before* deactivating, so the
+            # number can be reassigned. This must happen while the account is
+            # still active: UniFi rejects card mutations on a deactivated user
+            # (HTTP 404 "no-man zone"). Best-effort — a cleanup failure must not
+            # block cutting access; any card left behind is reclaimed (force_add)
+            # when the number is next assigned (see _bind_nfc_card).
+            try:
+                self._delete_cards_for_contact(user_id, unifi_user.contact_id)
+            except UnifiClientError as card_exc:
+                logger.warning(
+                    "contact %d: could not free card before deactivation (%s); "
+                    "it will be reclaimed when the number is next assigned",
+                    unifi_user.contact_id,
+                    card_exc,
+                )
             try:
                 self._request(
                     "PUT",
                     f"/api/v1/developer/users/{user_id}",
                     json={"status": "DEACTIVATED"},
                 )
+                time.sleep(self._INTER_CALL_DELAY_SECONDS)
+                # The user is now deactivated; keep the holder cache in step so a
+                # still-bound card (delete may have failed above) is force-reclaimed
+                # — not mis-read as ACTIVE — if reassigned later this cycle.
+                self._mark_holder_deactivated(unifi_user.contact_id, user_id)
             except UnifiClientError as exc:
                 self._record_apply_failure(unifi_user.contact_id, exc)
                 continue
-            time.sleep(self._INTER_CALL_DELAY_SECONDS)
 
     def _log_dry_run_actions(self, diff: Diff) -> None:
         # Emit would-import lines for cards not yet in the token map.
@@ -841,23 +1052,14 @@ class UnifiClient:
             contact_id=resolved.contact_id,
         )
         time.sleep(self._INTER_CALL_DELAY_SECONDS)
-        # Delete any old cards that differ from the new card_id.
-        cached_cards = self._nfc_cards_by_contact.get(resolved.contact_id, [])
+        # Delete any old cards that differ from the new card_id (the matching
+        # card, if any, is kept so the bind step doesn't have to re-add it).
         new_token = (
             self._ensure_nfc_token_map().get(resolved.card_id)
             if resolved.card_id is not None
             else None
         )
-        for old_card in cached_cards:
-            old_token = str(old_card.get("token", ""))
-            if not old_token or old_token == new_token:
-                continue
-            self._request(
-                "DELETE",
-                f"/api/v1/developer/users/{user_id}/nfc_cards/delete",
-                json={"token": old_token},
-            )
-            time.sleep(self._INTER_CALL_DELAY_SECONDS)
+        self._delete_cards_for_contact(user_id, resolved.contact_id, keep_token=new_token)
 
     def _activate_user(self, user_id: str) -> None:
         """Set a UniFi user's status to ACTIVE.
@@ -919,12 +1121,7 @@ class UnifiClient:
                 f"no token for card_id={_redact(resolved.card_id)} "
                 f"after import (contact={resolved.contact_id})"
             )
-        self._request(
-            "PUT",
-            f"/api/v1/developer/users/{user_id}/nfc_cards",
-            json={"token": token, "force_add": False},
-        )
-        time.sleep(self._INTER_CALL_DELAY_SECONDS)
+        self._bind_nfc_card(user_id, token, resolved.card_id)
 
     def _assign_policy_if_set(self, user_id: str, resolved: ResolvedMember) -> None:
         """Assign the resolved access policy to a UniFi user, if set.
@@ -1083,6 +1280,35 @@ def _redact(card_id: int | None) -> str:
     if card_id is None:
         return "none"
     return f"****{card_id % 10000:04d}"
+
+
+def _holder_is_disabled(holder: _CardHolder) -> bool:
+    """True if a card's current holder is a deactivated (non-active) UniFi user.
+
+    Mirrors ``UnifiUser.active`` (status == "ACTIVE"): anything else — chiefly
+    "DEACTIVATED" — counts as disabled, so door-sync may reclaim the card. An
+    empty or unreadable status is treated as NOT disabled, so a card is never
+    pulled from a holder whose state could not be confirmed.
+    """
+    status = holder.status.strip().upper()
+    return status != "" and status != "ACTIVE"
+
+
+def _describe_card_holder(holder: _CardHolder) -> str:
+    """Render a card's current holder for a bind-conflict error/alert.
+
+    A sync-managed holder (positive integer ``employee_number``) is identified by
+    its CiviCRM contact id; anyone else (a manually-enrolled admin card, no usable
+    employee number) by UniFi user id, flagged as not sync-managed. Identified by
+    id only — never the member's name (PII stays out of logs/alerts), never the
+    card number (architecture §11). The contact id resolves to the member in
+    CiviCRM if an operator needs the name.
+    """
+    status = holder.status or "unknown status"
+    emp = holder.employee_number
+    if emp.isascii() and emp.isdigit() and int(emp) > 0:
+        return f"contact={emp} ({status})"
+    return f"a non-sync UniFi user (id={holder.user_id or '?'}, {status})"
 
 
 def _backoff_seconds(attempt: int) -> float:

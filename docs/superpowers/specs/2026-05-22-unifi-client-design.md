@@ -149,12 +149,12 @@ Pagination follows the same shape as `CivicrmClient`: a `_MAX_PAGES = 1_000` cei
    - If empty: skip.
    - Else: assemble a CSV in memory (one row per missing card_id, no header row — see §9 for the exact format), `POST /api/v1/developer/credentials/nfc_cards/import` (multipart, field name `file`).
    - On success, parse the response's `data` array of `{nfc_id, token}` entries and merge into the token map.
-3. **Deactivate** (`PUT /users/:id` with body `{"status": "DEACTIVATED"}` for each entry in `diff.to_deactivate`).
+3. **Deactivate** — for each entry in `diff.to_deactivate`: first DELETE the user's cached NFC card(s) (`/users/:id/nfc_cards/delete`) to free the number for reuse, *then* `PUT /users/:id` with body `{"status": "DEACTIVATED"}`. Card removal must precede the status change because UniFi rejects card mutations on a deactivated user (HTTP 404 "no-man zone"). The card delete is best-effort — a failure is logged but does not block the status change (access-cutting wins); any card left behind is reclaimed on its next assignment (step 4).
 4. **Update credential** — for each `(resolved, unifi_user)` in `diff.to_update_credential`:
    - If `display_name` changed: `PUT /users/:id` body `{first_name, last_name}` (split via `_split_name`).
    - If `card_id` changed:
      - If the user has any existing card: `DELETE /users/:id/nfc_cards/delete` with body `{"token": <old_token>}` (resolves old token from the cached `nfc_cards` map populated by `fetch_users()`).
-     - `PUT /users/:id/nfc_cards` with body `{"token": <new_token>, "force_add": false}`. Token is looked up in the NFC-token map (post-import).
+     - `PUT /users/:id/nfc_cards` with body `{"token": <new_token>, "force_add": false}`. Token is looked up in the NFC-token map (post-import). On a `CODE_CREDS_NFC_HAS_BIND_USER` conflict the card is held by another user: if that holder is *disabled* it is reclaimed with a forced re-bind, otherwise the holder is identified (by id) in a per-user error — see the `force_add` note in "Open questions / decisions". The same bind path (and conflict handling) is used in step 6.
 5. **Update policy** — for each `(resolved, unifi_user)` in `diff.to_update_policy`:
    - `PUT /users/:id/access_policies` with body `{"access_policy_ids": [<resolved.target_policy>]}`.
 6. **Add** — for each `resolved` in `diff.to_add`:
@@ -398,5 +398,5 @@ Test changes: extend `_write_minimal_valid` in `tests/test_config.py` to include
 - **Retry budget of 3 / inter-call delay of 75ms.** Both are constants in `client.py`. Promotable to config fields if real-world tuning demands.
 - **Whether to compress the CSV upload.** Not done; CSVs are kilobyte-scale.
 - **First-name placeholder for single-word display names.** `"—"` (em-dash) — chosen to be visibly distinct in the UniFi UI so an operator notices and edits the CiviCRM record. Open to bikeshed.
-- **Whether `force_add: true` should ever be used.** Default `false` (don't steal a card from another user). If we ever need to forcibly re-bind, that's a separate operational flow with explicit human authorization.
+- **When `force_add: true` is used.** Never for a normal bind — door-sync doesn't displace an *active* user. It is used in exactly one case: reclaiming a card from a confirmed-**disabled** holder on a `CODE_CREDS_NFC_HAS_BIND_USER` conflict. The card can't be unbound from the disabled holder first (UniFi 404s card mutations on a deactivated user), so forcing the new bind is the only way to move it; door-sync gates this on having checked the holder's status in the fetch snapshot. An **active** holder (or one not in the snapshot) is left untouched and the bind fails as a per-user error that identifies the holder by id (contact id, else UniFi user id — never the member's name; PII stays out of logs), so an operator resolves it deliberately. A *blanket* `force_add: true` remains rejected: it would clobber active admin-managed bindings.
 - **Audit-log entries for UniFi calls.** Out of scope; `audit.py` (a separate slice) owns audit logging. The orchestrator passes the diff and the result there.

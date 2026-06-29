@@ -66,6 +66,14 @@ Card IDs are security-sensitive. They appear in audit logs and operational logs
 as last-4-digits only (e.g., ``****1234``). Full card IDs are never logged at
 any level.
 
+Member names are likewise kept out of the operational and audit log streams.
+Log records and alerts identify a member by CiviCRM ``contact_id`` (and, for an
+unmanaged UniFi account, its user id) — never by name — so member PII does not
+accumulate in the journal. A ``contact_id`` resolves back to the member in
+CiviCRM when an operator needs the name. (The interactive ``show-diff`` CLI does
+print names to the operator's terminal on demand; that is direct operator
+output, not a persisted log.)
+
 
 Error Handling
 --------------
