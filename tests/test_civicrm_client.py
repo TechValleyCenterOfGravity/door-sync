@@ -571,3 +571,27 @@ def test_fetch_active_empty_email_string_is_none(httpx_mock: HTTPXMock) -> None:
         result = client.fetch_active()
 
     assert result[0].email is None
+
+
+def test_fetch_active_whitespace_only_email_is_none(httpx_mock: HTTPXMock) -> None:
+    contact = _contact(42, "Jane Doe")
+    contact["email_primary.email"] = "   "
+    _register_contacts(httpx_mock, [contact])
+    _register_memberships(httpx_mock, [_membership(42, "Gold", "Current")])
+
+    with CivicrmClient(_config()) as client:
+        result = client.fetch_active()
+
+    assert result[0].email is None
+
+
+def test_fetch_active_email_is_trimmed(httpx_mock: HTTPXMock) -> None:
+    contact = _contact(42, "Jane Doe")
+    contact["email_primary.email"] = "  jane@example.com  "
+    _register_contacts(httpx_mock, [contact])
+    _register_memberships(httpx_mock, [_membership(42, "Gold", "Current")])
+
+    with CivicrmClient(_config()) as client:
+        result = client.fetch_active()
+
+    assert result[0].email == "jane@example.com"

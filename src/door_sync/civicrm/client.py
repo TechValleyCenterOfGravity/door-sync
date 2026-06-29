@@ -104,6 +104,8 @@ class CivicrmClient:
                     f"({redacted})"
                 ) from e
             raw_email = c.get("email_primary.email")
+            if isinstance(raw_email, str):
+                raw_email = raw_email.strip()
             email = raw_email if isinstance(raw_email, str) and raw_email else None
             result.append(
                 CiviMember(
