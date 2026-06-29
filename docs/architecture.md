@@ -148,7 +148,7 @@ class CiviMember:
     contact_id: int
     display_name: str
     card_id: int | None
-    membership_types: list[str]     # all active types for this contact
+    membership_types: tuple[str, ...]  # all active types for this contact
     email: str | None = None
 
 @dataclass(frozen=True)

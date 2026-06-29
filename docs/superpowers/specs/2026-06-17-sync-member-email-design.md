@@ -155,8 +155,15 @@ module-private and pure (no I/O). `to_update_policy`, `to_deactivate`,
       body["user_email"] = resolved.email
   ```
 
-- **Reactivate** (`_prepare_reactivation`): same — add `user_email` to the PUT
-  body when `resolved.email is not None`.
+- **Reactivate** (`_prepare_reactivation`): send `user_email` **unconditionally**
+  as `resolved.email or ""`. Unlike create, reactivation targets an existing
+  record that may already carry a stale email, so an absent email must be sent
+  as `""` to clear it in the same cycle — matching the update path. (Create
+  omits the field when absent because a brand-new record has nothing to clear.)
+
+  ```python
+  body["user_email"] = resolved.email or ""
+  ```
 
 - **Update** (`_apply_update_credential`): email travels with the name update so
   a combined name+email change is a single `PUT`, not two. Today the name PUT

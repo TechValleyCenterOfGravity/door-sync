@@ -942,16 +942,15 @@ In `_create_user`, build the body conditionally:
 
 - [ ] **Step 5: Write user_email on reactivation**
 
-In `_prepare_reactivation`, the first `PUT` sets name + employee_number. Add `user_email` when set. Change the json body construction:
+In `_prepare_reactivation`, the first `PUT` sets name + employee_number. Send `user_email` **unconditionally** as `resolved.email or ""`. Unlike create, reactivation targets an existing record that may carry a stale email, so an absent email is sent as `""` to clear it in the same cycle (matching the update path). Change the json body construction:
 
 ```python
         body: dict[str, Any] = {
             "first_name": first,
             "last_name": last,
             "employee_number": str(resolved.contact_id),
+            "user_email": resolved.email or "",
         }
-        if resolved.email is not None:
-            body["user_email"] = resolved.email
         self._request(
             "PUT",
             f"/api/v1/developer/users/{user_id}",
