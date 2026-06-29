@@ -1250,17 +1250,19 @@ def test_apply_bind_conflict_active_holder_names_and_raises(
     assert not [r for r in httpx_mock.get_requests() if r.method == "DELETE"]
 
     msg = str(exc_info.value)
-    # The failing member and the current holder are both named.
+    # The failing member and the current holder are both identified — by id, not
+    # by the holder's name (member PII must stay out of logs/alerts).
     assert "contact=7590" in msg
-    assert "non-sync UniFi user 'Front Desk'" in msg
-    assert "uuid-admin" in msg
+    assert "non-sync UniFi user (id=uuid-admin" in msg
     assert "ACTIVE" in msg
+    assert "Front Desk" not in msg
     # Card is redacted; the raw number never leaks except as the ****NNNN form.
     assert "****1234" in msg
     assert "1234" not in msg.replace("****1234", "")
     # The per-contact error log carries the holder too (the operator's signal).
     logged = "\n".join(r.getMessage() for r in caplog.records)
     assert "uuid-admin" in logged
+    assert "Front Desk" not in logged
 
 
 def test_apply_bind_conflict_reclaims_card_from_disabled_holder(
@@ -1343,12 +1345,86 @@ def test_apply_bind_conflict_reclaims_card_from_disabled_holder(
         {"token": "tok-1234", "force_add": False},
         {"token": "tok-1234", "force_add": True},
     ]
-    # The reclaim is logged and redacted (last-4 only).
+    # The reclaim is logged and redacted (last-4 only); no member name leaks.
     logged = "\n".join(r.getMessage() for r in caplog.records)
     assert "reclaiming" in logged
     assert "contact=5000" in logged
+    assert "Old Member" not in logged
     assert "****1234" in logged
     assert "1234" not in logged.replace("****1234", "")
+    # The moved card is forgotten on the holder's cached list, so a later
+    # same-cycle op on contact 5000 won't try to DELETE a token it no longer owns.
+    holder_cards = client._nfc_cards_by_contact.get(5000, [])
+    assert all(c.get("token") != "tok-1234" for c in holder_cards)
+
+
+def test_apply_bind_conflict_holder_with_null_status_is_not_reclaimed(
+    httpx_mock: HTTPXMock,
+    monkeypatch: pytest.MonkeyPatch,
+    make_client: Callable[..., UnifiClient],
+) -> None:
+    """A holder whose status is JSON null is treated as unknown, not disabled.
+
+    A null status must not become the string "None" and read as disabled — that
+    would force-reclaim a card from a holder whose state we couldn't confirm.
+    """
+    monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
+
+    client = make_client()
+
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_card_tokens_page([(1234, "tok-1234")]),
+    )
+    # Holder 8000 has a JSON-null status (unknown), and holds tok-1234.
+    null_status_holder = {
+        "id": "uuid-8000",
+        "first_name": "Null",
+        "last_name": "Status",
+        "employee_number": "8000",
+        "status": None,
+        "nfc_cards": [{"id": "300001", "token": "tok-1234", "type": "id_card"}],
+        "access_policy_ids": ["pol-1"],
+    }
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page(
+            [
+                null_status_holder,
+                _user_row(
+                    contact_id=7590, user_id="uuid-7590", first_name="Member", last_name="7590"
+                ),
+            ]
+        ),
+    )
+    fetched = client.fetch_users()
+    target = next(u for u in fetched if u.contact_id == 7590)
+
+    httpx_mock.add_response(
+        method="PUT",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-7590/nfc_cards",
+        json={
+            "code": "CODE_CREDS_NFC_HAS_BIND_USER",
+            "msg": "This NFC card is already assigned to another user.",
+            "data": None,
+        },
+    )
+
+    resolved = _resolved(contact_id=7590, card_id=1234)
+    with pytest.raises(UnifiClientError) as exc_info:
+        client.apply(_diff(to_update_credential=((resolved, target),)))
+
+    # Not reclaimed: exactly one bind (force_add=false), no force_add retry.
+    binds = [
+        _json.loads(r.content)
+        for r in httpx_mock.get_requests()
+        if r.method == "PUT" and r.url.path.endswith("/users/uuid-7590/nfc_cards")
+    ]
+    assert binds == [{"token": "tok-1234", "force_add": False}]
+    # Holder is named (unknown status), not force-stolen from.
+    assert "contact=8000" in str(exc_info.value)
 
 
 def test_apply_update_credential_swaps_card(

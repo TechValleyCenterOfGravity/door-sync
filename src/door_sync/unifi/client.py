@@ -66,13 +66,12 @@ class _CardHolder:
     """Who a card token is currently bound to in UniFi.
 
     Captured for every user during ``fetch_users()`` — sync-managed or not —
-    purely so a bind conflict (``CODE_CREDS_NFC_HAS_BIND_USER``) can name the
-    current holder in the failure and alert. Never carries the card number; only
-    identifies who holds it (architecture §11).
+    purely so a bind conflict (``CODE_CREDS_NFC_HAS_BIND_USER``) can identify the
+    current holder in the failure and alert. Identifies by id only — never the
+    member's name (PII stays out of logs) or the card number (architecture §11).
     """
 
     user_id: str
-    display_name: str
     employee_number: str
     status: str
 
@@ -420,8 +419,13 @@ class UnifiClient:
 
         Runs for *every* /users row, including admin-managed users without an
         `employee_number` (which `_row_to_unifi_user` drops), so a later bind
-        conflict can name whoever currently holds the card. Diagnostic only — it
-        never affects reconciliation.
+        conflict can identify whoever currently holds the card. Diagnostic only —
+        it never affects reconciliation.
+
+        Uses ``or ""`` rather than ``.get(k, "")`` throughout: a JSON ``null``
+        field would otherwise stringify to ``"None"``, which would record a bogus
+        token and — worse — make ``_holder_is_disabled`` read an unknown status
+        as disabled (and so eligible for force-reclaim).
 
         Args:
             row: Raw user dict from the UniFi API.
@@ -429,19 +433,15 @@ class UnifiClient:
         cards = row.get("nfc_cards") or []
         if not isinstance(cards, list):
             return
-        first_name = str(row.get("first_name", ""))
-        last_name = str(row.get("last_name", ""))
-        display_name = " ".join(part for part in [first_name, last_name] if part).strip()
         holder = _CardHolder(
-            user_id=str(row.get("id", "")),
-            display_name=display_name,
+            user_id=str(row.get("id") or ""),
             employee_number=str(row.get("employee_number") or ""),
-            status=str(row.get("status", "")),
+            status=str(row.get("status") or ""),
         )
         for card in cards:
             if not isinstance(card, dict):
                 continue
-            token = str(card.get("token", ""))
+            token = str(card.get("token") or "")
             if token:
                 self._holder_by_token[token] = holder
 
@@ -685,9 +685,11 @@ class UnifiClient:
                     _describe_card_holder(holder),
                 )
                 self._put_bind_card(user_id, token, force_add=True)
-                # The card has moved; drop the stale holder so a later same-cycle
-                # lookup on this token doesn't misreport it.
+                # The card has moved off the holder; forget it on both caches so a
+                # later same-cycle operation on the holder (e.g. a reactivation)
+                # doesn't try to DELETE a token it no longer owns.
                 self._holder_by_token.pop(token, None)
+                self._forget_holder_card(holder, token)
                 time.sleep(self._INTER_CALL_DELAY_SECONDS)
                 return
             who = (
@@ -700,6 +702,29 @@ class UnifiClient:
                 code=exc.code,
             ) from exc
         time.sleep(self._INTER_CALL_DELAY_SECONDS)
+
+    def _forget_holder_card(self, holder: _CardHolder, token: str) -> None:
+        """Drop a reclaimed token from the holder's cached card list.
+
+        After a card is force-reassigned away from a disabled holder, that
+        holder's cached cards (from ``fetch_users()``) are stale. Only
+        sync-managed holders are cached by contact id; a non-sync holder has no
+        entry to prune.
+
+        Args:
+            holder: The disabled holder the card was reclaimed from.
+            token: The token that was moved to another user.
+        """
+        emp = holder.employee_number
+        if not (emp.isascii() and emp.isdigit()):
+            return
+        contact_id = int(emp)
+        cards = self._nfc_cards_by_contact.get(contact_id)
+        if not cards:
+            return
+        self._nfc_cards_by_contact[contact_id] = [
+            card for card in cards if str(card.get("token") or "") != token
+        ]
 
     def _apply_update_policy(self, diff: Diff) -> None:
         for resolved, _unifi_user in diff.to_update_policy:
@@ -1248,17 +1273,18 @@ def _holder_is_disabled(holder: _CardHolder) -> bool:
 def _describe_card_holder(holder: _CardHolder) -> str:
     """Render a card's current holder for a bind-conflict error/alert.
 
-    A sync-managed holder (positive integer ``employee_number``) is named by its
-    CiviCRM contact id; anyone else (a manually-enrolled admin card, no usable
-    employee number) is named by UniFi user id and flagged as not sync-managed.
-    Never includes the card number — only who holds it (architecture §11).
+    A sync-managed holder (positive integer ``employee_number``) is identified by
+    its CiviCRM contact id; anyone else (a manually-enrolled admin card, no usable
+    employee number) by UniFi user id, flagged as not sync-managed. Identified by
+    id only — never the member's name (PII stays out of logs/alerts), never the
+    card number (architecture §11). The contact id resolves to the member in
+    CiviCRM if an operator needs the name.
     """
-    name = holder.display_name or "(no name)"
     status = holder.status or "unknown status"
     emp = holder.employee_number
     if emp.isascii() and emp.isdigit() and int(emp) > 0:
-        return f"contact={emp} ('{name}', {status})"
-    return f"a non-sync UniFi user '{name}' (id={holder.user_id}, {status})"
+        return f"contact={emp} ({status})"
+    return f"a non-sync UniFi user (id={holder.user_id or '?'}, {status})"
 
 
 def _backoff_seconds(attempt: int) -> float:
