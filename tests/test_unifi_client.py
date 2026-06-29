@@ -3,6 +3,7 @@
 import hashlib
 import json as _json
 import logging
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -149,26 +150,22 @@ def test_init_raises_on_tls_fingerprint_mismatch() -> None:
         assert "TLS fingerprint mismatch" in str(exc_info.value)
 
 
-def test_init_verifies_tls_fingerprint_match() -> None:
+def test_init_verifies_tls_fingerprint_match(make_client: Callable[..., UnifiClient]) -> None:
     """Matching fingerprint at init constructs the client successfully."""
     real_cert = b"fake-cert-bytes"
     real_fp = hashlib.sha256(real_cert).hexdigest()
     config = _unifi_config(fingerprint=real_fp)
-    with _patched_tls(real_cert):
-        client = UnifiClient(config)
+    client = make_client(config=config, cert=real_cert)
     assert client._http is not None
-    client.close()
 
 
-def test_init_accepts_colon_separated_fingerprint() -> None:
+def test_init_accepts_colon_separated_fingerprint(make_client: Callable[..., UnifiClient]) -> None:
     """The fingerprint can be passed as AA:BB:CC:... (common format)."""
     real_cert = b"fake-cert-bytes"
     real_fp = hashlib.sha256(real_cert).hexdigest()
     colon_form = ":".join(real_fp[i : i + 2] for i in range(0, len(real_fp), 2))
     config = _unifi_config(fingerprint=colon_form)
-    with _patched_tls(real_cert):
-        client = UnifiClient(config)
-    client.close()
+    make_client(config=config, cert=real_cert)
 
 
 def test_context_manager_closes_http_client() -> None:
@@ -184,32 +181,54 @@ def test_context_manager_closes_http_client() -> None:
 # --- Response envelope + retries ---
 
 
-def _make_client() -> UnifiClient:
-    """Build a UnifiClient with TLS verification stubbed out."""
-    cert = b"fake-cert"
-    fp = hashlib.sha256(cert).hexdigest()
-    config = _unifi_config(fingerprint=fp)
-    with _patched_tls(cert):
-        return UnifiClient(config)
+@pytest.fixture
+def make_client() -> Iterator[Callable[..., UnifiClient]]:
+    """Build UnifiClients with TLS stubbed; close them all at teardown.
+
+    Returns a factory. Every client it creates is closed after the test,
+    even when an assertion raises mid-test, so the underlying httpx.Client
+    never leaks. Pass `config=` for a bespoke config, `dry_run=True` for a
+    dry-run client, or `cert=` to pin a non-default certificate.
+    """
+    created: list[UnifiClient] = []
+
+    def _factory(
+        config: UnifiConfig | None = None,
+        *,
+        dry_run: bool = False,
+        cert: bytes = b"fake-cert",
+    ) -> UnifiClient:
+        if config is None:
+            fp = hashlib.sha256(cert).hexdigest()
+            config = _unifi_config(fingerprint=fp)
+        with _patched_tls(cert):
+            client = UnifiClient(config, dry_run=dry_run)
+        created.append(client)
+        return client
+
+    yield _factory
+    for client in created:
+        client.close()
 
 
-def test_non_success_envelope_raises(httpx_mock: HTTPXMock) -> None:
+def test_non_success_envelope_raises(
+    httpx_mock: HTTPXMock, make_client: Callable[..., UnifiClient]
+) -> None:
     """code != SUCCESS raises UnifiClientError with the code + msg."""
     httpx_mock.add_response(
         method="GET",
         url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
         json={"code": "CODE_AUTH_FAILED", "msg": "Authentication failed.", "data": None},
     )
-    client = _make_client()
+    client = make_client()
     with pytest.raises(UnifiClientError) as exc_info:
         client.fetch_users()
     assert "CODE_AUTH_FAILED" in str(exc_info.value)
     assert "Authentication failed." in str(exc_info.value)
-    client.close()
 
 
 def test_http_500_retries_then_raises(
-    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch, make_client: Callable[..., UnifiClient]
 ) -> None:
     """Three consecutive 500s exhaust retries and raise."""
     monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
@@ -220,14 +239,15 @@ def test_http_500_retries_then_raises(
             status_code=500,
             text="server error",
         )
-    client = _make_client()
+    client = make_client()
     with pytest.raises(UnifiClientError) as exc_info:
         client.fetch_users()
     assert "HTTP 500" in str(exc_info.value)
-    client.close()
 
 
-def test_http_402_raises_immediately_no_retry(httpx_mock: HTTPXMock) -> None:
+def test_http_402_raises_immediately_no_retry(
+    httpx_mock: HTTPXMock, make_client: Callable[..., UnifiClient]
+) -> None:
     """402 'Request Failed' is non-standard 4xx; no retries."""
     httpx_mock.add_response(
         method="GET",
@@ -235,17 +255,16 @@ def test_http_402_raises_immediately_no_retry(httpx_mock: HTTPXMock) -> None:
         status_code=402,
         text="request failed",
     )
-    client = _make_client()
+    client = make_client()
     with pytest.raises(UnifiClientError) as exc_info:
         client.fetch_users()
     assert "HTTP 402" in str(exc_info.value)
     # Only one request should have been made.
     assert len(httpx_mock.get_requests()) == 1
-    client.close()
 
 
 def test_http_429_honors_retry_after_seconds(
-    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch, make_client: Callable[..., UnifiClient]
 ) -> None:
     """429 with Retry-After: 5 waits >= 5 seconds, then 200 succeeds."""
     sleeps: list[float] = []
@@ -266,24 +285,24 @@ def test_http_429_honors_retry_after_seconds(
             "pagination": {"page_num": 1, "page_size": 100, "total": 0},
         },
     )
-    client = _make_client()
+    client = make_client()
     client.fetch_users()
     assert any(s >= 5 for s in sleeps)
-    client.close()
 
 
-def test_malformed_json_raises(httpx_mock: HTTPXMock) -> None:
+def test_malformed_json_raises(
+    httpx_mock: HTTPXMock, make_client: Callable[..., UnifiClient]
+) -> None:
     """200 with non-JSON body raises UnifiClientError."""
     httpx_mock.add_response(
         method="GET",
         url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
         text="<html>not json</html>",
     )
-    client = _make_client()
+    client = make_client()
     with pytest.raises(UnifiClientError) as exc_info:
         client.fetch_users()
     assert "malformed JSON" in str(exc_info.value)
-    client.close()
 
 
 # --- fetch_users ---
@@ -327,14 +346,16 @@ def _users_page(rows: list[dict[str, Any]], total: int | None = None) -> dict[st
     }
 
 
-def test_fetch_users_happy_path(httpx_mock: HTTPXMock) -> None:
+def test_fetch_users_happy_path(
+    httpx_mock: HTTPXMock, make_client: Callable[..., UnifiClient]
+) -> None:
     """One page, returns list[UnifiUser] with parsed fields."""
     httpx_mock.add_response(
         method="GET",
         url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
         json=_users_page([_user_row(contact_id=42)]),
     )
-    client = _make_client()
+    client = make_client()
     users = client.fetch_users()
     assert len(users) == 1
     u = users[0]
@@ -343,10 +364,11 @@ def test_fetch_users_happy_path(httpx_mock: HTTPXMock) -> None:
     assert u.card_id == 1234  # 2A04D2 decoded with FC=42 -> CN=1234
     assert u.active is True
     assert u.policy == "pol-1"
-    client.close()
 
 
-def test_fetch_users_paginates(httpx_mock: HTTPXMock) -> None:
+def test_fetch_users_paginates(
+    httpx_mock: HTTPXMock, make_client: Callable[..., UnifiClient]
+) -> None:
     """101 users across 2 pages; follows until short page."""
     page1 = [_user_row(contact_id=i, user_id=f"uuid-{i}") for i in range(1, 101)]
     page2 = [_user_row(contact_id=101, user_id="uuid-101")]
@@ -360,15 +382,14 @@ def test_fetch_users_paginates(httpx_mock: HTTPXMock) -> None:
         url="https://192.0.2.1:12445/api/v1/developer/users?page_num=2&page_size=100&expand[]=access_policy",
         json=_users_page(page2, total=101),
     )
-    client = _make_client()
+    client = make_client()
     users = client.fetch_users()
     assert len(users) == 101
     assert {u.contact_id for u in users} == set(range(1, 102))
-    client.close()
 
 
 def test_fetch_users_skips_admin_without_employee_number(
-    httpx_mock: HTTPXMock,
+    httpx_mock: HTTPXMock, make_client: Callable[..., UnifiClient]
 ) -> None:
     rows = [
         _user_row(contact_id=42),
@@ -379,14 +400,13 @@ def test_fetch_users_skips_admin_without_employee_number(
         url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
         json=_users_page(rows),
     )
-    client = _make_client()
+    client = make_client()
     users = client.fetch_users()
     assert {u.contact_id for u in users} == {42}
-    client.close()
 
 
 def test_fetch_users_skips_non_int_employee_number(
-    httpx_mock: HTTPXMock,
+    httpx_mock: HTTPXMock, make_client: Callable[..., UnifiClient]
 ) -> None:
     rows = [
         _user_row(contact_id=42),
@@ -397,14 +417,13 @@ def test_fetch_users_skips_non_int_employee_number(
         url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
         json=_users_page(rows),
     )
-    client = _make_client()
+    client = make_client()
     users = client.fetch_users()
     assert {u.contact_id for u in users} == {42}
-    client.close()
 
 
 def test_fetch_users_skips_non_positive_employee_number(
-    httpx_mock: HTTPXMock,
+    httpx_mock: HTTPXMock, make_client: Callable[..., UnifiClient]
 ) -> None:
     """employee_number "0" or negative is not a CiviCRM contact_id (auto-increment
     starts at 1). Skipping prevents such a user from being silently deactivated
@@ -421,17 +440,16 @@ def test_fetch_users_skips_non_positive_employee_number(
         url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
         json=_users_page(rows),
     )
-    client = _make_client()
+    client = make_client()
     users = client.fetch_users()
     assert {u.contact_id for u in users} == {42}
     # And the caches must not have been populated with the bad contact_ids.
     assert 0 not in client._unifi_user_id_by_contact
     assert -5 not in client._unifi_user_id_by_contact
-    client.close()
 
 
 def test_fetch_users_logs_warning_on_multiple_cards(
-    httpx_mock: HTTPXMock, caplog: pytest.LogCaptureFixture
+    httpx_mock: HTTPXMock, caplog: pytest.LogCaptureFixture, make_client: Callable[..., UnifiClient]
 ) -> None:
     row = _user_row(contact_id=42)
     row["nfc_cards"] = [
@@ -444,15 +462,14 @@ def test_fetch_users_logs_warning_on_multiple_cards(
         json=_users_page([row]),
     )
     with caplog.at_level(logging.WARNING, logger="door_sync.unifi.client"):
-        client = _make_client()
+        client = make_client()
         users = client.fetch_users()
     assert users[0].card_id == 1234  # uses the first card
     assert any("2 cards" in rec.message for rec in caplog.records)
-    client.close()
 
 
 def test_fetch_users_foreign_fc_card_yields_card_id_none(
-    httpx_mock: HTTPXMock,
+    httpx_mock: HTTPXMock, make_client: Callable[..., UnifiClient]
 ) -> None:
     """A card with a non-configured facility code -> card_id=None on the user."""
     row = _user_row(contact_id=42, nfc_id="990000")  # FC=99, not 42
@@ -461,14 +478,13 @@ def test_fetch_users_foreign_fc_card_yields_card_id_none(
         url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
         json=_users_page([row]),
     )
-    client = _make_client()
+    client = make_client()
     users = client.fetch_users()
     assert users[0].card_id is None
-    client.close()
 
 
 def test_fetch_users_foreign_fc_warning_does_not_leak_nfc_id(
-    httpx_mock: HTTPXMock, caplog: pytest.LogCaptureFixture
+    httpx_mock: HTTPXMock, caplog: pytest.LogCaptureFixture, make_client: Callable[..., UnifiClient]
 ) -> None:
     """The foreign-FC warning must not log the raw nfc_id (architecture §11)."""
     row = _user_row(contact_id=42, nfc_id="63ABCD")  # FC=0x63=99, CN=0xABCD
@@ -478,7 +494,7 @@ def test_fetch_users_foreign_fc_warning_does_not_leak_nfc_id(
         json=_users_page([row]),
     )
     with caplog.at_level(logging.WARNING, logger="door_sync.unifi.client"):
-        client = _make_client()
+        client = make_client()
         client.fetch_users()
 
     # The warning must mention contact_id 42 but never the raw nfc_id.
@@ -487,29 +503,32 @@ def test_fetch_users_foreign_fc_warning_does_not_leak_nfc_id(
     for rec in foreign_warnings:
         assert "63ABCD" not in rec.message
         assert "63abcd" not in rec.message
-    client.close()
 
 
-def test_fetch_users_parses_user_email(httpx_mock: HTTPXMock) -> None:
+def test_fetch_users_parses_user_email(
+    httpx_mock: HTTPXMock, make_client: Callable[..., UnifiClient]
+) -> None:
     httpx_mock.add_response(
         method="GET",
         url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
         json=_users_page([_user_row(contact_id=42, user_email="jane@example.com")]),
     )
-    with _make_client() as client:
-        users = client.fetch_users()
-        assert users[0].email == "jane@example.com"
+    client = make_client()
+    users = client.fetch_users()
+    assert users[0].email == "jane@example.com"
 
 
-def test_fetch_users_missing_user_email_is_none(httpx_mock: HTTPXMock) -> None:
+def test_fetch_users_missing_user_email_is_none(
+    httpx_mock: HTTPXMock, make_client: Callable[..., UnifiClient]
+) -> None:
     httpx_mock.add_response(
         method="GET",
         url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
         json=_users_page([_user_row(contact_id=42)]),  # no user_email key
     )
-    with _make_client() as client:
-        users = client.fetch_users()
-        assert users[0].email is None
+    client = make_client()
+    users = client.fetch_users()
+    assert users[0].email is None
 
 
 # --- apply preconditions & dry-run ---
@@ -560,24 +579,21 @@ def _unifi_user(
     )
 
 
-def test_apply_requires_prior_fetch_users(httpx_mock: HTTPXMock) -> None:
+def test_apply_requires_prior_fetch_users(
+    httpx_mock: HTTPXMock, make_client: Callable[..., UnifiClient]
+) -> None:
     """Calling apply() before fetch_users() must raise."""
-    client = _make_client()
+    client = make_client()
     with pytest.raises(UnifiClientError) as exc_info:
         client.apply(_diff(to_deactivate=(_unifi_user(99),)))
     assert "fetch_users" in str(exc_info.value)
-    client.close()
 
 
 def test_apply_dry_run_makes_no_writes(
-    httpx_mock: HTTPXMock, caplog: pytest.LogCaptureFixture
+    httpx_mock: HTTPXMock, caplog: pytest.LogCaptureFixture, make_client: Callable[..., UnifiClient]
 ) -> None:
     """Non-empty diff in dry-run logs intentions but issues zero httpx writes."""
-    cert = b"fake-cert"
-    fp = hashlib.sha256(cert).hexdigest()
-    config = _unifi_config(fingerprint=fp)
-    with _patched_tls(cert):
-        client = UnifiClient(config, dry_run=True)
+    client = make_client(dry_run=True)
 
     # Seed the precondition: a fetch_users that returns empty.
     httpx_mock.add_response(
@@ -614,7 +630,6 @@ def test_apply_dry_run_makes_no_writes(
     # the redacted "****1234" form also appears in that same message.
     assert any("****1234" in m for m in messages)
     assert not any("1234" in m and "****1234" not in m for m in messages)
-    client.close()
 
 
 # --- NFC token map ---
@@ -633,13 +648,11 @@ def _cards_page(rows: list[dict[str, Any]], total: int | None = None) -> dict[st
     }
 
 
-def test_token_map_keys_by_parsed_card_id(httpx_mock: HTTPXMock) -> None:
+def test_token_map_keys_by_parsed_card_id(
+    httpx_mock: HTTPXMock, make_client: Callable[..., UnifiClient]
+) -> None:
     """Build dict[card_id → token]; foreign-FC and unparseable rows are skipped."""
-    cert = b"fake-cert"
-    fp = hashlib.sha256(cert).hexdigest()
-    config = _unifi_config(fingerprint=fp)
-    with _patched_tls(cert):
-        client = UnifiClient(config)
+    client = make_client()
 
     httpx_mock.add_response(
         method="GET",
@@ -655,16 +668,13 @@ def test_token_map_keys_by_parsed_card_id(httpx_mock: HTTPXMock) -> None:
     )
     token_map = client._ensure_nfc_token_map()
     assert token_map == {1234: "tok-1234", 1235: "tok-1235"}
-    client.close()
 
 
-def test_token_map_cached_across_calls(httpx_mock: HTTPXMock) -> None:
+def test_token_map_cached_across_calls(
+    httpx_mock: HTTPXMock, make_client: Callable[..., UnifiClient]
+) -> None:
     """Second call doesn't re-fetch."""
-    cert = b"fake-cert"
-    fp = hashlib.sha256(cert).hexdigest()
-    config = _unifi_config(fingerprint=fp)
-    with _patched_tls(cert):
-        client = UnifiClient(config)
+    client = make_client()
 
     httpx_mock.add_response(
         method="GET",
@@ -675,19 +685,16 @@ def test_token_map_cached_across_calls(httpx_mock: HTTPXMock) -> None:
     second = client._ensure_nfc_token_map()
     assert first is second
     assert len(httpx_mock.get_requests()) == 1
-    client.close()
 
 
 # --- Card import ---
 
 
-def test_import_cards_uses_2col_csv_format(httpx_mock: HTTPXMock) -> None:
+def test_import_cards_uses_2col_csv_format(
+    httpx_mock: HTTPXMock, make_client: Callable[..., UnifiClient]
+) -> None:
     """Multipart body contains <nfc_id>,sync-<padded> lines, no header."""
-    cert = b"fake-cert"
-    fp = hashlib.sha256(cert).hexdigest()
-    config = _unifi_config(fingerprint=fp)
-    with _patched_tls(cert):
-        client = UnifiClient(config)
+    client = make_client()
 
     # First, an empty token-map fetch.
     httpx_mock.add_response(
@@ -719,16 +726,13 @@ def test_import_cards_uses_2col_csv_format(httpx_mock: HTTPXMock) -> None:
     assert "nfc_id,alias" not in body
     # Token map updated.
     assert client._nfc_token_map == {1234: "tok-1234", 1235: "tok-1235"}
-    client.close()
 
 
-def test_import_cards_empty_token_raises(httpx_mock: HTTPXMock) -> None:
+def test_import_cards_empty_token_raises(
+    httpx_mock: HTTPXMock, make_client: Callable[..., UnifiClient]
+) -> None:
     """A row with empty token in the response signals a failed import."""
-    cert = b"fake-cert"
-    fp = hashlib.sha256(cert).hexdigest()
-    config = _unifi_config(fingerprint=fp)
-    with _patched_tls(cert):
-        client = UnifiClient(config)
+    client = make_client()
 
     httpx_mock.add_response(
         method="GET",
@@ -747,31 +751,23 @@ def test_import_cards_empty_token_raises(httpx_mock: HTTPXMock) -> None:
     with pytest.raises(UnifiClientError) as exc_info:
         client._import_cards([1234])
     assert "card_id=****1234" in str(exc_info.value)
-    client.close()
 
 
-def test_import_cards_empty_list_is_noop(httpx_mock: HTTPXMock) -> None:
-    cert = b"fake-cert"
-    fp = hashlib.sha256(cert).hexdigest()
-    config = _unifi_config(fingerprint=fp)
-    with _patched_tls(cert):
-        client = UnifiClient(config)
+def test_import_cards_empty_list_is_noop(
+    httpx_mock: HTTPXMock, make_client: Callable[..., UnifiClient]
+) -> None:
+    client = make_client()
     client._import_cards([])
     assert len(httpx_mock.get_requests()) == 0
-    client.close()
 
 
 def test_import_cards_fc_mismatch_in_response_does_not_leak_card_number(
-    httpx_mock: HTTPXMock,
+    httpx_mock: HTTPXMock, make_client: Callable[..., UnifiClient]
 ) -> None:
     """If the import response contains an nfc_id whose FC doesn't match our
     config, the raised error mentions only the FC bytes — not the raw nfc_id
     (which encodes the card number, architecture §11)."""
-    cert = b"fake-cert"
-    fp = hashlib.sha256(cert).hexdigest()
-    config = _unifi_config(fingerprint=fp)
-    with _patched_tls(cert):
-        client = UnifiClient(config)
+    client = make_client()
     httpx_mock.add_response(
         method="GET",
         url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
@@ -796,19 +792,14 @@ def test_import_cards_fc_mismatch_in_response_does_not_leak_card_number(
     assert "5904D2" not in message
     assert "1234" not in message
     assert "04D2" not in message
-    client.close()
 
 
 def test_import_cards_unparseable_nfc_id_does_not_leak_string(
-    httpx_mock: HTTPXMock,
+    httpx_mock: HTTPXMock, make_client: Callable[..., UnifiClient]
 ) -> None:
     """If the import response contains a non-hex nfc_id, the error says so
     structurally — the raw string is not included."""
-    cert = b"fake-cert"
-    fp = hashlib.sha256(cert).hexdigest()
-    config = _unifi_config(fingerprint=fp)
-    with _patched_tls(cert):
-        client = UnifiClient(config)
+    client = make_client()
     httpx_mock.add_response(
         method="GET",
         url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
@@ -829,23 +820,18 @@ def test_import_cards_unparseable_nfc_id_does_not_leak_string(
     assert "not valid hex" in message
     # Raw string must not appear.
     assert "garbage-not-hex" not in message
-    client.close()
 
 
 # --- apply: live writes ---
 
 
 def test_apply_deactivate_sets_status(
-    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch, make_client: Callable[..., UnifiClient]
 ) -> None:
     """to_deactivate → PUT /users/:id with status=DEACTIVATED."""
     monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
 
-    cert = b"fake-cert"
-    fp = hashlib.sha256(cert).hexdigest()
-    config = _unifi_config(fingerprint=fp)
-    with _patched_tls(cert):
-        client = UnifiClient(config)
+    client = make_client()
 
     # Prime the cache via fetch_users.
     httpx_mock.add_response(
@@ -866,20 +852,15 @@ def test_apply_deactivate_sets_status(
     write_req = httpx_mock.get_requests()[-1]
     body = _json.loads(write_req.content)
     assert body == {"status": "DEACTIVATED"}
-    client.close()
 
 
 def test_apply_update_credential_swaps_card(
-    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch, make_client: Callable[..., UnifiClient]
 ) -> None:
     """to_update_credential with changed card_id: DELETE old, PUT new."""
     monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
 
-    cert = b"fake-cert"
-    fp = hashlib.sha256(cert).hexdigest()
-    config = _unifi_config(fingerprint=fp)
-    with _patched_tls(cert):
-        client = UnifiClient(config)
+    client = make_client()
 
     # Fetch returns user 42 with old card_id=1234 (nfc_id=2A04D2, token=tok-1234).
     httpx_mock.add_response(
@@ -955,19 +936,14 @@ def test_apply_update_credential_swaps_card(
         if r.method == "PUT" and r.url.path.endswith("/nfc_cards")
     )
     assert _json.loads(bind_req.content) == {"token": "tok-1235", "force_add": False}
-    client.close()
 
 
 def test_apply_update_credential_name_only(
-    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch, make_client: Callable[..., UnifiClient]
 ) -> None:
     """display_name changes but card_id doesn't: only PUT name, no card calls."""
     monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
-    cert = b"fake-cert"
-    fp = hashlib.sha256(cert).hexdigest()
-    config = _unifi_config(fingerprint=fp)
-    with _patched_tls(cert):
-        client = UnifiClient(config)
+    client = make_client()
 
     httpx_mock.add_response(
         method="GET",
@@ -1019,18 +995,13 @@ def test_apply_update_credential_name_only(
         if "/users/uuid-42/nfc_cards" in str(r.url) or "/nfc_cards/import" in str(r.url)
     ]
     assert user_nfc_calls == []
-    client.close()
 
 
 def test_apply_update_policy_replaces(
-    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch, make_client: Callable[..., UnifiClient]
 ) -> None:
     monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
-    cert = b"fake-cert"
-    fp = hashlib.sha256(cert).hexdigest()
-    config = _unifi_config(fingerprint=fp)
-    with _patched_tls(cert):
-        client = UnifiClient(config)
+    client = make_client()
 
     httpx_mock.add_response(
         method="GET",
@@ -1051,17 +1022,14 @@ def test_apply_update_policy_replaces(
 
     put_req = httpx_mock.get_requests()[-1]
     assert _json.loads(put_req.content) == {"access_policy_ids": ["pol-new"]}
-    client.close()
 
 
-def test_apply_create_new_user_path(httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_apply_create_new_user_path(
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch, make_client: Callable[..., UnifiClient]
+) -> None:
     """to_add for unknown contact_id: POST /users, then bind card + assign policy."""
     monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
-    cert = b"fake-cert"
-    fp = hashlib.sha256(cert).hexdigest()
-    config = _unifi_config(fingerprint=fp)
-    with _patched_tls(cert):
-        client = UnifiClient(config)
+    client = make_client()
 
     # Empty initial fetch.
     httpx_mock.add_response(
@@ -1126,19 +1094,14 @@ def test_apply_create_new_user_path(httpx_mock: HTTPXMock, monkeypatch: pytest.M
     )
     body = _json.loads(post_user.content)
     assert body == {"first_name": "Jane", "last_name": "Doe", "employee_number": "42"}
-    client.close()
 
 
 def test_apply_reactivate_inactive_user_path(
-    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch, make_client: Callable[..., UnifiClient]
 ) -> None:
     """to_add for cached-inactive contact: prep, bind, assign, then activate."""
     monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
-    cert = b"fake-cert"
-    fp = hashlib.sha256(cert).hexdigest()
-    config = _unifi_config(fingerprint=fp)
-    with _patched_tls(cert):
-        client = UnifiClient(config)
+    client = make_client()
 
     # Fetch returns user 42 inactive with the same card.
     httpx_mock.add_response(
@@ -1205,20 +1168,14 @@ def test_apply_reactivate_inactive_user_path(
     assert "status" not in _json.loads(user_puts[0].content)
     assert _json.loads(user_puts[1].content) == {"status": "ACTIVE"}
 
-    client.close()
-
 
 def test_apply_reactivate_clears_stale_email_when_none(
-    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch, make_client: Callable[..., UnifiClient]
 ) -> None:
     """Reactivating a member whose CiviCRM email was removed clears the stale
     UniFi email in the same cycle (profile PUT sends user_email="")."""
     monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
-    cert = b"fake-cert"
-    fp = hashlib.sha256(cert).hexdigest()
-    config = _unifi_config(fingerprint=fp)
-    with _patched_tls(cert):
-        client = UnifiClient(config)
+    client = make_client()
 
     # Fetch returns user 42 inactive, same card, but carrying a stale email.
     httpx_mock.add_response(
@@ -1279,19 +1236,13 @@ def test_apply_reactivate_clears_stale_email_when_none(
     )
     assert profile_put_body["user_email"] == ""
 
-    client.close()
-
 
 def test_apply_reactivate_swaps_card_when_changed(
-    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch, make_client: Callable[..., UnifiClient]
 ) -> None:
     """to_add for cached-inactive with different card_id: prep, delete old, bind, assign, activate."""
     monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
-    cert = b"fake-cert"
-    fp = hashlib.sha256(cert).hexdigest()
-    config = _unifi_config(fingerprint=fp)
-    with _patched_tls(cert):
-        client = UnifiClient(config)
+    client = make_client()
 
     # Fetch: inactive user with OLD card_id=1234.
     httpx_mock.add_response(
@@ -1384,19 +1335,13 @@ def test_apply_reactivate_swaps_card_when_changed(
     assert "status" not in _json.loads(user_puts[0].content)
     assert _json.loads(user_puts[1].content) == {"status": "ACTIVE"}
 
-    client.close()
-
 
 def test_apply_executes_deactivate_update_credential_update_policy_add_order(
-    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch, make_client: Callable[..., UnifiClient]
 ) -> None:
     """Single diff with one entry in each bucket; assert HTTPX call sequence."""
     monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
-    cert = b"fake-cert"
-    fp = hashlib.sha256(cert).hexdigest()
-    config = _unifi_config(fingerprint=fp)
-    with _patched_tls(cert):
-        client = UnifiClient(config)
+    client = make_client()
 
     # 3 users in fetch: 100 (deactivate), 101 (update_credential), 102 (update_policy).
     # Users 101 and 102 have names matching what _resolved() produces ("Member N")
@@ -1478,11 +1423,10 @@ def test_apply_executes_deactivate_update_credential_update_policy_add_order(
         ("PUT", "/api/v1/developer/users/u101/nfc_cards"),
         ("PUT", "/api/v1/developer/users/u102/access_policies"),
     ]
-    client.close()
 
 
 def test_fetch_users_warning_does_not_leak_card_id(
-    httpx_mock: HTTPXMock, caplog: pytest.LogCaptureFixture
+    httpx_mock: HTTPXMock, caplog: pytest.LogCaptureFixture, make_client: Callable[..., UnifiClient]
 ) -> None:
     """The multi-card warning must not log full card_ids (architecture §11)."""
     row = _user_row(contact_id=42)
@@ -1497,26 +1441,21 @@ def test_fetch_users_warning_does_not_leak_card_id(
         json=_users_page([row]),
     )
     with caplog.at_level(logging.WARNING, logger="door_sync.unifi.client"):
-        client = _make_client()
+        client = make_client()
         client.fetch_users()
 
     # The warning message must not contain the raw card numbers.
     for rec in caplog.records:
         assert "1234" not in rec.message
         assert "1235" not in rec.message
-    client.close()
 
 
 def test_apply_dry_run_still_fetches_token_map_when_diff_has_cards(
-    httpx_mock: HTTPXMock,
+    httpx_mock: HTTPXMock, make_client: Callable[..., UnifiClient]
 ) -> None:
     """Dry-run with card-bearing diff must still issue the token-map GET
     so a dry-run report reflects which cards would need import (spec §8)."""
-    cert = b"fake-cert"
-    fp = hashlib.sha256(cert).hexdigest()
-    config = _unifi_config(fingerprint=fp)
-    with _patched_tls(cert):
-        client = UnifiClient(config, dry_run=True)
+    client = make_client(dry_run=True)
 
     # Empty fetch_users.
     httpx_mock.add_response(
@@ -1545,18 +1484,13 @@ def test_apply_dry_run_still_fetches_token_map_when_diff_has_cards(
         r for r in httpx_mock.get_requests() if "/credentials/nfc_cards/import" in str(r.url)
     ]
     assert import_calls == []
-    client.close()
 
 
 def test_apply_dry_run_no_token_map_when_diff_has_no_cards(
-    httpx_mock: HTTPXMock,
+    httpx_mock: HTTPXMock, make_client: Callable[..., UnifiClient]
 ) -> None:
     """Dry-run with cardless diff (deactivate only) skips the token-map fetch."""
-    cert = b"fake-cert"
-    fp = hashlib.sha256(cert).hexdigest()
-    config = _unifi_config(fingerprint=fp)
-    with _patched_tls(cert):
-        client = UnifiClient(config, dry_run=True)
+    client = make_client(dry_run=True)
 
     httpx_mock.add_response(
         method="GET",
@@ -1572,20 +1506,15 @@ def test_apply_dry_run_no_token_map_when_diff_has_no_cards(
         r for r in httpx_mock.get_requests() if "/credentials/nfc_cards/tokens" in str(r.url)
     ]
     assert token_calls == []
-    client.close()
 
 
 def test_apply_inter_call_delay_invoked(
-    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch, make_client: Callable[..., UnifiClient]
 ) -> None:
     """time.sleep(0.075) is called once per write."""
     sleeps: list[float] = []
     monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda s: sleeps.append(s))
-    cert = b"fake-cert"
-    fp = hashlib.sha256(cert).hexdigest()
-    config = _unifi_config(fingerprint=fp)
-    with _patched_tls(cert):
-        client = UnifiClient(config)
+    client = make_client()
 
     httpx_mock.add_response(
         method="GET",
@@ -1603,11 +1532,10 @@ def test_apply_inter_call_delay_invoked(
     client.apply(_diff(to_deactivate=(fetched[0],)))
     # One write → one sleep of 0.075.
     assert sleeps == [0.075]
-    client.close()
 
 
 def test_unifi_client_constructs_from_loaded_config(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_client: Callable[..., UnifiClient]
 ) -> None:
     """Loading the example config and instantiating UnifiClient must
     produce a client whose base_url and TLS-verify hostname are sensible.
@@ -1632,16 +1560,16 @@ def test_unifi_client_constructs_from_loaded_config(
     # Patch the fingerprint in the loaded config (frozen dataclass — make a copy).
     config_unifi = replace(config.unifi, tls_fingerprint=fp)
 
-    with _patched_tls(cert):
-        client = UnifiClient(config_unifi)
+    client = make_client(config=config_unifi)
     # base_url must NOT have https:// doubled.
     assert str(client._http.base_url).count("https://") == 1
     # And it must be a valid URL.
     assert "://" in str(client._http.base_url)
-    client.close()
 
 
-def test_unifi_client_host_without_port_defaults_to_12445() -> None:
+def test_unifi_client_host_without_port_defaults_to_12445(
+    make_client: Callable[..., UnifiClient],
+) -> None:
     """If config.host omits the port, both TLS verification and base_url
     must default to UniFi Access's fixed port 12445 — same target for both.
 
@@ -1657,17 +1585,17 @@ def test_unifi_client_host_without_port_defaults_to_12445() -> None:
         tls_fingerprint=fp,
         facility_code=42,
     )
-    with _patched_tls(cert):
-        client = UnifiClient(config)
+    client = make_client(config=config)
     # base_url has the default port baked in.
     assert str(client._http.base_url) == "https://192.0.2.1:12445"
     # And the internal hostname/port used by TLS verification matches.
     assert client._hostname == "192.0.2.1"
     assert client._port == 12445
-    client.close()
 
 
-def test_unifi_client_host_with_custom_port_preserves_it() -> None:
+def test_unifi_client_host_with_custom_port_preserves_it(
+    make_client: Callable[..., UnifiClient],
+) -> None:
     """An explicit non-standard port in config.host is preserved in both
     base_url and the TLS-verification target.
     """
@@ -1679,23 +1607,17 @@ def test_unifi_client_host_with_custom_port_preserves_it() -> None:
         tls_fingerprint=fp,
         facility_code=42,
     )
-    with _patched_tls(cert):
-        client = UnifiClient(config)
+    client = make_client(config=config)
     assert str(client._http.base_url) == "https://192.0.2.1:8443"
     assert client._port == 8443
-    client.close()
 
 
 def test_apply_create_includes_user_email_when_set(
-    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch, make_client: Callable[..., UnifiClient]
 ) -> None:
     """A new user with an email POSTs user_email in the create body."""
     monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
-    cert = b"fake-cert"
-    fp = hashlib.sha256(cert).hexdigest()
-    config = _unifi_config(fingerprint=fp)
-    with _patched_tls(cert):
-        client = UnifiClient(config)
+    client = make_client()
 
     httpx_mock.add_response(
         method="GET",
@@ -1746,19 +1668,14 @@ def test_apply_create_includes_user_email_when_set(
         "employee_number": "42",
         "user_email": "jane@example.com",
     }
-    client.close()
 
 
 def test_apply_create_omits_user_email_when_none(
-    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch, make_client: Callable[..., UnifiClient]
 ) -> None:
     """A new user without an email POSTs no user_email key (unchanged body)."""
     monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
-    cert = b"fake-cert"
-    fp = hashlib.sha256(cert).hexdigest()
-    config = _unifi_config(fingerprint=fp)
-    with _patched_tls(cert):
-        client = UnifiClient(config)
+    client = make_client()
 
     httpx_mock.add_response(
         method="GET",
@@ -1804,19 +1721,14 @@ def test_apply_create_omits_user_email_when_none(
     )
     body = _json.loads(post_user.content)
     assert body == {"first_name": "Jane", "last_name": "Doe", "employee_number": "42"}
-    client.close()
 
 
 def test_apply_update_credential_email_only(
-    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch, make_client: Callable[..., UnifiClient]
 ) -> None:
     """email changes but name and card don't: one PUT carrying only user_email."""
     monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
-    cert = b"fake-cert"
-    fp = hashlib.sha256(cert).hexdigest()
-    config = _unifi_config(fingerprint=fp)
-    with _patched_tls(cert):
-        client = UnifiClient(config)
+    client = make_client()
 
     httpx_mock.add_response(
         method="GET",
@@ -1858,20 +1770,15 @@ def test_apply_update_credential_email_only(
         r for r in httpx_mock.get_requests() if "/users/uuid-42/nfc_cards" in str(r.url)
     ]
     assert user_nfc_calls == []
-    client.close()
 
 
 def test_apply_update_credential_email_cleared_to_none(
-    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch, make_client: Callable[..., UnifiClient]
 ) -> None:
     """email removed in CiviCRM (resolved.email=None) while UniFi has an email:
     one PUT with user_email="" to clear it; no nfc_cards calls."""
     monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
-    cert = b"fake-cert"
-    fp = hashlib.sha256(cert).hexdigest()
-    config = _unifi_config(fingerprint=fp)
-    with _patched_tls(cert):
-        client = UnifiClient(config)
+    client = make_client()
 
     httpx_mock.add_response(
         method="GET",
@@ -1913,19 +1820,14 @@ def test_apply_update_credential_email_cleared_to_none(
         r for r in httpx_mock.get_requests() if "/users/uuid-42/nfc_cards" in str(r.url)
     ]
     assert user_nfc_calls == []
-    client.close()
 
 
 def test_apply_update_credential_name_and_email_single_put(
-    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch, make_client: Callable[..., UnifiClient]
 ) -> None:
     """name AND email change together: a single PUT carries all changed fields."""
     monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
-    cert = b"fake-cert"
-    fp = hashlib.sha256(cert).hexdigest()
-    config = _unifi_config(fingerprint=fp)
-    with _patched_tls(cert):
-        client = UnifiClient(config)
+    client = make_client()
 
     httpx_mock.add_response(
         method="GET",
@@ -1972,18 +1874,13 @@ def test_apply_update_credential_name_and_email_single_put(
     assert len(put_reqs) == 1  # one combined PUT, not two
     body = _json.loads(put_reqs[0].content)
     assert body == {"first_name": "New", "last_name": "Name", "user_email": "new@example.com"}
-    client.close()
 
 
 def test_apply_dry_run_logs_would_import_for_unknown_cards(
-    httpx_mock: HTTPXMock, caplog: pytest.LogCaptureFixture
+    httpx_mock: HTTPXMock, caplog: pytest.LogCaptureFixture, make_client: Callable[..., UnifiClient]
 ) -> None:
     """Dry-run report includes a would-import line for cards not in the token map."""
-    cert = b"fake-cert"
-    fp = hashlib.sha256(cert).hexdigest()
-    config = _unifi_config(fingerprint=fp)
-    with _patched_tls(cert):
-        client = UnifiClient(config, dry_run=True)
+    client = make_client(dry_run=True)
 
     httpx_mock.add_response(
         method="GET",
@@ -2007,19 +1904,14 @@ def test_apply_dry_run_logs_would_import_for_unknown_cards(
     # Only card 9999 should produce a would-import line (9998 is already known).
     assert any("would-import" in m and "****9999" in m for m in messages)
     assert not any("would-import" in m and "****9998" in m for m in messages)
-    client.close()
 
 
 def test_apply_reactivate_includes_user_email_when_set(
-    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch, make_client: Callable[..., UnifiClient]
 ) -> None:
     """to_add for cached-inactive contact with email: profile PUT includes user_email."""
     monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
-    cert = b"fake-cert"
-    fp = hashlib.sha256(cert).hexdigest()
-    config = _unifi_config(fingerprint=fp)
-    with _patched_tls(cert):
-        client = UnifiClient(config)
+    client = make_client()
 
     # Fetch returns user 42 inactive with the same card.
     httpx_mock.add_response(
@@ -2099,5 +1991,3 @@ def test_apply_reactivate_includes_user_email_when_set(
         next(r for r in user_puts if "employee_number" not in _json.loads(r.content)).content
     )
     assert activate_put_body == {"status": "ACTIVE"}
-
-    client.close()
