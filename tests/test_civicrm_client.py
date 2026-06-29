@@ -422,6 +422,28 @@ def test_http_429_honors_retry_after_seconds(
     assert any(s >= 5 for s in sleep_calls), f"Expected a sleep >= 5s, got {sleep_calls}"
 
 
+def test_http_429_exhausts_retries_then_raises(
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Three consecutive 429s exhaust retries and raise CivicrmClientError."""
+    sleep_calls: list[float] = []
+    monkeypatch.setattr("time.sleep", lambda s: sleep_calls.append(s))
+
+    for _ in range(3):
+        httpx_mock.add_response(
+            method="POST",
+            url="https://civi.example.org/civicrm/ajax/api4/Contact/get",
+            status_code=429,
+        )
+
+    with CivicrmClient(_config()) as client:
+        with pytest.raises(CivicrmClientError, match="429"):
+            client.fetch_active()
+
+    assert len(httpx_mock.get_requests()) == 3
+    assert len(sleep_calls) == 2  # Sleep between attempts, not after the last.
+
+
 def test_malformed_json_raises(httpx_mock: HTTPXMock) -> None:
     """200 with invalid JSON body → CivicrmClientError."""
     httpx_mock.add_response(

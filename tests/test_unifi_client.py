@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 from pytest_httpx import HTTPXMock
 
@@ -2002,3 +2003,230 @@ def test_apply_reactivate_includes_user_email_when_set(
         next(r for r in user_puts if "employee_number" not in _json.loads(r.content)).content
     )
     assert activate_put_body == {"status": "ACTIVE"}
+
+
+# --- network-error retry & exhaustion ---
+
+
+def test_network_error_then_success(
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch, make_client: Callable[..., UnifiClient]
+) -> None:
+    """One transient httpx.RequestError then a 200 → fetch_users succeeds."""
+    sleeps: list[float] = []
+    monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda s: sleeps.append(s))
+    httpx_mock.add_exception(httpx.ConnectError("transient blip"))
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page([_user_row(contact_id=42)]),
+    )
+    client = make_client()
+    users = client.fetch_users()
+    assert len(users) == 1
+    assert len(sleeps) == 1
+
+
+def test_network_error_retries_then_raises(
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch, make_client: Callable[..., UnifiClient]
+) -> None:
+    """Three consecutive httpx.RequestErrors exhaust retries and raise."""
+    sleeps: list[float] = []
+    monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda s: sleeps.append(s))
+    for _ in range(3):
+        httpx_mock.add_exception(httpx.ConnectError("connection refused"))
+    client = make_client()
+    with pytest.raises(UnifiClientError) as exc_info:
+        client.fetch_users()
+    assert "network failure" in str(exc_info.value)
+    assert len(httpx_mock.get_requests()) == 3
+    assert len(sleeps) == 2  # Sleep between attempts, not after the last.
+
+
+def test_http_429_exhausts_retries_then_raises(
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch, make_client: Callable[..., UnifiClient]
+) -> None:
+    """Three consecutive 429s exhaust retries and raise (HTTP 429 path)."""
+    monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
+    for _ in range(3):
+        httpx_mock.add_response(
+            method="GET",
+            url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+            status_code=429,
+        )
+    client = make_client()
+    with pytest.raises(UnifiClientError) as exc_info:
+        client.fetch_users()
+    assert "HTTP 429" in str(exc_info.value)
+    assert len(httpx_mock.get_requests()) == 3
+
+
+# --- malformed-payload envelope guards ---
+
+
+def test_unwrap_non_object_envelope_raises(
+    httpx_mock: HTTPXMock, make_client: Callable[..., UnifiClient]
+) -> None:
+    """A 200 whose JSON body is a list (not an object) raises with envelope-shape detail."""
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=["not", "an", "object"],
+    )
+    client = make_client()
+    with pytest.raises(UnifiClientError) as exc_info:
+        client.fetch_users()
+    assert "unexpected envelope shape" in str(exc_info.value)
+
+
+def test_fetch_users_non_list_data_raises(
+    httpx_mock: HTTPXMock, make_client: Callable[..., UnifiClient]
+) -> None:
+    """SUCCESS envelope whose `data` is not a list raises from fetch_users."""
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json={"code": "SUCCESS", "msg": "ok", "data": {"not": "a list"}},
+    )
+    client = make_client()
+    with pytest.raises(UnifiClientError) as exc_info:
+        client.fetch_users()
+    assert "expected list of users" in str(exc_info.value)
+
+
+def test_token_map_non_list_data_raises(
+    httpx_mock: HTTPXMock, make_client: Callable[..., UnifiClient]
+) -> None:
+    """SUCCESS envelope whose `data` is not a list raises from _ensure_nfc_token_map."""
+    client = make_client()
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json={"code": "SUCCESS", "msg": "ok", "data": {"not": "a list"}},
+    )
+    with pytest.raises(UnifiClientError) as exc_info:
+        client._ensure_nfc_token_map()
+    assert "expected list of cards" in str(exc_info.value)
+
+
+def test_import_cards_non_list_data_raises(
+    httpx_mock: HTTPXMock, make_client: Callable[..., UnifiClient]
+) -> None:
+    """SUCCESS import envelope whose `data` is not a list raises from _import_cards."""
+    client = make_client()
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_cards_page([]),
+    )
+    httpx_mock.add_response(
+        method="POST",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/import",
+        json={"code": "SUCCESS", "msg": "ok", "data": {"not": "a list"}},
+    )
+    with pytest.raises(UnifiClientError) as exc_info:
+        client._import_cards([1234])
+    assert "expected list from /nfc_cards/import" in str(exc_info.value)
+
+
+# --- create-user with no id ---
+
+
+def test_apply_create_user_missing_id_raises(
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch, make_client: Callable[..., UnifiClient]
+) -> None:
+    """POST /users returning a SUCCESS envelope with no `id` raises UnifiClientError."""
+    monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
+    client = make_client()
+
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page([], total=0),
+    )
+    client.fetch_users()
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_cards_page([]),
+    )
+    # POST /users → SUCCESS but the data object has no "id".
+    httpx_mock.add_response(
+        method="POST",
+        url="https://192.0.2.1:12445/api/v1/developer/users",
+        json={"code": "SUCCESS", "msg": "success", "data": {"first_name": "Jane"}},
+    )
+
+    resolved = ResolvedMember(
+        contact_id=42,
+        display_name="Jane Doe",
+        card_id=None,  # no card → no import POST, isolates the create path
+        target_policy="pol-1",
+        resolution="tier",
+    )
+    with pytest.raises(UnifiClientError) as exc_info:
+        client.apply(_diff(to_add=(resolved,)))
+    assert "no id" in str(exc_info.value)
+    assert "contact=42" in str(exc_info.value)
+
+
+# --- update_credential that removes a card (card_id None) ---
+
+
+def test_apply_update_credential_removes_card(
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch, make_client: Callable[..., UnifiClient]
+) -> None:
+    """resolved.card_id is None while the UniFi user has a card: delete the old
+    card and issue NO new-card bind/import (the 403->365 skip branch)."""
+    monkeypatch.setattr("door_sync.unifi.client.time.sleep", lambda _: None)
+    client = make_client()
+
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/users?page_num=1&page_size=100&expand[]=access_policy",
+        json=_users_page(
+            [
+                _user_row(
+                    contact_id=42,
+                    user_id="uuid-42",
+                    nfc_id="2A04D2",
+                    nfc_token="tok-1234",
+                )
+            ]
+        ),
+    )
+    fetched = client.fetch_users()
+
+    # Token-map fetch (preimport runs because to_update_credential is non-empty;
+    # the resolved member has no card so no import is needed).
+    httpx_mock.add_response(
+        method="GET",
+        url="https://192.0.2.1:12445/api/v1/developer/credentials/nfc_cards/tokens?page_num=1&page_size=100",
+        json=_cards_page([{"nfc_id": "2A04D2", "token": "tok-1234"}]),
+    )
+    # DELETE old card.
+    httpx_mock.add_response(
+        method="DELETE",
+        url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42/nfc_cards/delete",
+        json={"code": "SUCCESS", "msg": "success", "data": None},
+    )
+
+    resolved = ResolvedMember(
+        contact_id=42,
+        display_name="Jane Doe",  # matches fetched user → no name PUT
+        card_id=None,  # card removed in CiviCRM
+        target_policy="pol-1",
+        resolution="tier",
+    )
+    client.apply(_diff(to_update_credential=((resolved, fetched[0]),)))
+
+    delete_req = next(r for r in httpx_mock.get_requests() if r.method == "DELETE")
+    assert _json.loads(delete_req.content) == {"token": "tok-1234"}
+    # No bind (PUT .../nfc_cards) and no import.
+    bind_calls = [
+        r
+        for r in httpx_mock.get_requests()
+        if r.method == "PUT" and r.url.path.endswith("/nfc_cards")
+    ]
+    assert bind_calls == []
+    import_calls = [r for r in httpx_mock.get_requests() if "/nfc_cards/import" in str(r.url)]
+    assert import_calls == []

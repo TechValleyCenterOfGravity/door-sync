@@ -995,3 +995,174 @@ def test_alert_smtp_rejects_invalid_port(tmp_path: Path, monkeypatch: pytest.Mon
     with pytest.raises(ConfigError) as exc:
         load(config_path=cfg, env_path=env)
     assert any(i.path == "alert.smtp.port" for i in exc.value.issues)
+
+
+# --- email-address-list validation (_validate_email_addrs) ---
+
+
+def test_alert_mailgun_to_empty_list_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty `to` list is rejected as not-a-non-empty-list."""
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(
+        tmp_path,
+        extra_toml=(
+            '\n[alert]\ntransport = "mailgun"\n'
+            "[alert.mailgun]\n"
+            'domain = "mg.example.com"\n'
+            'from = "sync@mg.example.com"\n'
+            "to = []\n"
+        ),
+    )
+    env.write_text(env.read_text() + "MAILGUN_API_KEY=key-test\n")
+    with pytest.raises(ConfigError) as exc:
+        load(config_path=cfg, env_path=env)
+    assert any(
+        i.path == "alert.mailgun.to" and "non-empty list" in i.message for i in exc.value.issues
+    )
+
+
+def test_alert_smtp_to_non_list_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-list, non-string `to` value is rejected as not-a-non-empty-list."""
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(
+        tmp_path,
+        extra_toml=(
+            '\n[alert]\ntransport = "smtp"\n'
+            "[alert.smtp]\n"
+            'host = "smtp.example.com"\n'
+            "port = 587\n"
+            "starttls = true\n"
+            'from = "sync@example.com"\n'
+            "to = 42\n"
+        ),
+    )
+    env.write_text(env.read_text() + "SMTP_USERNAME=user\nSMTP_PASSWORD=pass\n")
+    with pytest.raises(ConfigError) as exc:
+        load(config_path=cfg, env_path=env)
+    assert any(
+        i.path == "alert.smtp.to" and "non-empty list" in i.message for i in exc.value.issues
+    )
+
+
+def test_alert_mailgun_to_invalid_address_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A syntactically invalid address in `to` reports a per-index issue."""
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(
+        tmp_path,
+        extra_toml=(
+            '\n[alert]\ntransport = "mailgun"\n'
+            "[alert.mailgun]\n"
+            'domain = "mg.example.com"\n'
+            'from = "sync@mg.example.com"\n'
+            'to = ["not-an-email"]\n'
+        ),
+    )
+    env.write_text(env.read_text() + "MAILGUN_API_KEY=key-test\n")
+    with pytest.raises(ConfigError) as exc:
+        load(config_path=cfg, env_path=env)
+    assert any(i.path == "alert.mailgun.to[0]" for i in exc.value.issues)
+
+
+def test_alert_smtp_to_invalid_address_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same per-address validation feeds the smtp `to` list."""
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(
+        tmp_path,
+        extra_toml=(
+            '\n[alert]\ntransport = "smtp"\n'
+            "[alert.smtp]\n"
+            'host = "smtp.example.com"\n'
+            "port = 587\n"
+            "starttls = true\n"
+            'from = "sync@example.com"\n'
+            'to = ["nope"]\n'
+        ),
+    )
+    env.write_text(env.read_text() + "SMTP_USERNAME=user\nSMTP_PASSWORD=pass\n")
+    with pytest.raises(ConfigError) as exc:
+        load(config_path=cfg, env_path=env)
+    assert any(i.path == "alert.smtp.to[0]" for i in exc.value.issues)
+
+
+# --- tier rule: present-but-invalid target_policy when resolution is 'tier' ---
+
+
+def test_tier_rule_tier_empty_target_policy_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """resolution='tier' with an empty-string target_policy → ConfigError."""
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(tmp_path)
+    cfg.write_text(
+        cfg.read_text()
+        + '[tier_mapping.rules.Gold]\nresolution = "tier"\ntarget_policy = ""\nrank = 1\n'
+    )
+    with pytest.raises(ConfigError) as exc:
+        load(config_path=cfg, env_path=env)
+    assert any(
+        i.path == "tier_mapping.rules.Gold.target_policy" and "non-empty string" in i.message
+        for i in exc.value.issues
+    )
+
+
+def test_tier_rule_tier_non_string_target_policy_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """resolution='tier' with a non-string target_policy → ConfigError."""
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(tmp_path)
+    cfg.write_text(
+        cfg.read_text()
+        + '[tier_mapping.rules.Gold]\nresolution = "tier"\ntarget_policy = 42\nrank = 1\n'
+    )
+    with pytest.raises(ConfigError) as exc:
+        load(config_path=cfg, env_path=env)
+    assert any(
+        i.path == "tier_mapping.rules.Gold.target_policy" and "non-empty string" in i.message
+        for i in exc.value.issues
+    )
+
+
+# --- malformed TOML ---
+
+
+def test_malformed_toml_surfaces_as_config_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Junk TOML in the config file raises ConfigError with an invalid-TOML issue."""
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg = tmp_path / "config.toml"
+    env = tmp_path / "env"
+    cfg.write_text("this is not = valid toml [[[\n")
+    env.write_text("CIVICRM_API_KEY=x\nUNIFI_API_KEY=y\n")
+    with pytest.raises(ConfigError) as exc:
+        load(config_path=cfg, env_path=env)
+    assert any(i.path == "config_file" and "invalid TOML" in i.message for i in exc.value.issues)
+
+
+# --- active_statuses entry validation ---
+
+
+def test_active_statuses_with_empty_entry_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty-string entry in active_statuses → ConfigError."""
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(tmp_path)
+    cfg.write_text(
+        cfg.read_text().replace(
+            'card_id_field = "Door_Access.card_id"\n',
+            'card_id_field = "Door_Access.card_id"\nactive_statuses = ["Current", ""]\n',
+        )
+    )
+    with pytest.raises(ConfigError) as exc:
+        load(config_path=cfg, env_path=env)
+    assert any(
+        i.path == "civicrm.active_statuses" and "non-empty" in i.message for i in exc.value.issues
+    )
