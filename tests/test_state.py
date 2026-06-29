@@ -31,10 +31,8 @@ def test_write_success_from_empty_sets_iso_and_increments_count(tmp_path: Path) 
 
 def test_write_success_preserves_existing_halt_fields(tmp_path: Path) -> None:
     path = tmp_path / "state.json"
-    state.write_halt(path, "earlier halt",
-                     now=datetime(2026, 5, 22, 10, 0, 0, tzinfo=UTC))
-    state.write_success(path,
-                        now=datetime(2026, 5, 23, 11, 0, 0, tzinfo=UTC))
+    state.write_halt(path, "earlier halt", now=datetime(2026, 5, 22, 10, 0, 0, tzinfo=UTC))
+    state.write_success(path, now=datetime(2026, 5, 23, 11, 0, 0, tzinfo=UTC))
 
     result = state.read(path)
     assert result.last_success_iso == "2026-05-23T11:00:00Z"
@@ -45,10 +43,8 @@ def test_write_success_preserves_existing_halt_fields(tmp_path: Path) -> None:
 
 def test_write_halt_sets_halt_fields_and_preserves_success(tmp_path: Path) -> None:
     path = tmp_path / "state.json"
-    state.write_success(path,
-                        now=datetime(2026, 5, 20, 9, 0, 0, tzinfo=UTC))
-    state.write_halt(path, "mass deactivate",
-                     now=datetime(2026, 5, 23, 14, 0, 0, tzinfo=UTC))
+    state.write_success(path, now=datetime(2026, 5, 20, 9, 0, 0, tzinfo=UTC))
+    state.write_halt(path, "mass deactivate", now=datetime(2026, 5, 23, 14, 0, 0, tzinfo=UTC))
 
     result = state.read(path)
     assert result.last_success_iso == "2026-05-20T09:00:00Z"
@@ -59,12 +55,9 @@ def test_write_halt_sets_halt_fields_and_preserves_success(tmp_path: Path) -> No
 
 def test_round_trip_preserves_all_fields(tmp_path: Path) -> None:
     path = tmp_path / "state.json"
-    state.write_halt(path, "reason A",
-                     now=datetime(2026, 5, 22, 10, 0, 0, tzinfo=UTC))
-    state.write_success(path,
-                        now=datetime(2026, 5, 23, 11, 0, 0, tzinfo=UTC))
-    state.write_halt(path, "reason B",
-                     now=datetime(2026, 5, 24, 12, 0, 0, tzinfo=UTC))
+    state.write_halt(path, "reason A", now=datetime(2026, 5, 22, 10, 0, 0, tzinfo=UTC))
+    state.write_success(path, now=datetime(2026, 5, 23, 11, 0, 0, tzinfo=UTC))
+    state.write_halt(path, "reason B", now=datetime(2026, 5, 24, 12, 0, 0, tzinfo=UTC))
 
     result = state.read(path)
     assert result == State(
@@ -77,8 +70,7 @@ def test_round_trip_preserves_all_fields(tmp_path: Path) -> None:
 
 def test_atomic_write_leaves_no_tmp_file(tmp_path: Path) -> None:
     path = tmp_path / "state.json"
-    state.write_success(path,
-                        now=datetime(2026, 5, 23, 14, 0, 0, tzinfo=UTC))
+    state.write_success(path, now=datetime(2026, 5, 23, 14, 0, 0, tzinfo=UTC))
 
     leftovers = list(tmp_path.glob("*.tmp"))
     assert leftovers == []
@@ -103,7 +95,6 @@ def test_now_defaults_to_utc_iso_z(tmp_path: Path) -> None:
 
 def test_write_creates_missing_parent_dir(tmp_path: Path) -> None:
     path = tmp_path / "nested" / "dir" / "state.json"
-    state.write_success(path,
-                        now=datetime(2026, 5, 23, 14, 0, 0, tzinfo=UTC))
+    state.write_success(path, now=datetime(2026, 5, 23, 14, 0, 0, tzinfo=UTC))
 
     assert path.exists()
