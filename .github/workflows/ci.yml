@@ -32,12 +32,16 @@ jobs:
     - name: Install dependencies
       run: uv sync --locked --all-extras --dev
     - name: Lint
+      id: lint
       run: uv run ruff check --output-format=github .
     - name: Format check
+      id: format
       run: uv run ruff format --diff .
     - name: Type check
+      id: typecheck
       run: uv run pyrefly check --output-format=github
     - name: Test
+      id: test
       run: uv run pytest --cov --cov-report=xml --cov-report=term-missing
     - name: Upload coverage to GitHub
       uses: actions/upload-code-coverage@abb5995db9e0199b0e2bb9dbd136fce4cb1ec4d3 # v1.3.0
@@ -46,3 +50,33 @@ jobs:
         language: Python
         label: code-coverage/pytest
         fail-on-error: false   # coverage upload is best-effort; don't gate the build on it
+    - name: Job summary
+      if: always()
+      continue-on-error: true
+      run: |
+        gate() {  # $1 = label, $2 = step outcome
+          case "$2" in
+            success) echo "| $1 | ✅ pass |" ;;
+            failure) echo "| $1 | ❌ fail |" ;;
+            skipped) echo "| $1 | ⏭️ skipped |" ;;
+            *)       echo "| $1 | ➖ $2 |" ;;
+          esac
+        }
+        {
+          echo "## CI summary"
+          echo ""
+          echo "| Gate | Result |"
+          echo "| --- | --- |"
+          gate "Lint (ruff check)"    "${{ steps.lint.outcome }}"
+          gate "Format (ruff format)" "${{ steps.format.outcome }}"
+          gate "Type check (pyrefly)" "${{ steps.typecheck.outcome }}"
+          gate "Tests (pytest)"       "${{ steps.test.outcome }}"
+          echo ""
+          if [ -f .coverage ]; then
+            echo "<details><summary>📊 Coverage: $(uv run coverage report --format=total)% total</summary>"
+            echo ""
+            uv run coverage report --format=markdown
+            echo ""
+            echo "</details>"
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"
