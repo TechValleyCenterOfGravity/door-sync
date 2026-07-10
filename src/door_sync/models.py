@@ -117,6 +117,25 @@ class ReconcileResult:
 
 
 @dataclass(frozen=True)
+class ReconcileRequest:
+    """A queued webhook trigger asking the scheduler to run a reconcile soon.
+
+    Enqueued by the webhook receiver thread and drained by the scheduler thread.
+    The reconcile is always whole-population (the CiviCRM client has no
+    per-contact fetch); contact_id is carried for logging only.
+
+    Parameters:
+        reason: Short label for why the reconcile was requested (e.g. the
+            webhook event type). Logged, never a member name.
+        contact_id: CiviCRM contact ID from the triggering event, for logging
+            only, or None when the payload did not carry one.
+    """
+
+    reason: str
+    contact_id: int | None = None
+
+
+@dataclass(frozen=True)
 class TierRule:
     """A single tier-mapping rule from configuration.
 

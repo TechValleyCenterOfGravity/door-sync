@@ -8,6 +8,7 @@ covers signal handling, which restores the previous handlers).
 
 import json
 import os
+import queue
 import signal
 import threading
 from pathlib import Path
@@ -19,9 +20,11 @@ from door_sync.config import (
     Config,
     OpsPaths,
     UnifiConfig,
+    WebhookConfig,
 )
 from door_sync.models import (
     Diff,
+    ReconcileRequest,
     ReconcileResult,
     SafetyThresholds,
     TierMapping,
@@ -29,7 +32,7 @@ from door_sync.models import (
 )
 
 
-def _config(tmp_path: Path, *, cadence_seconds: int = 600) -> Config:
+def _config(tmp_path: Path, *, cadence_seconds: int = 600, debounce_seconds: float = 0.0) -> Config:
     return Config(
         cadence_seconds=cadence_seconds,
         civicrm=CivicrmConfig(
@@ -54,6 +57,15 @@ def _config(tmp_path: Path, *, cadence_seconds: int = 600) -> Config:
             alert_flag=tmp_path / "alert.flag",
         ),
         alert=AlertConfig(transport="flag-file", smtp=None, mailgun=None),
+        webhook=WebhookConfig(
+            enabled=False,
+            host="127.0.0.1",
+            port=8787,
+            hmac_secret="",
+            max_body_bytes=65536,
+            max_skew_seconds=300,
+            debounce_seconds=debounce_seconds,
+        ),
     )
 
 
@@ -183,3 +195,102 @@ def test_dry_run_propagates_to_reconcile_fn(tmp_path: Path) -> None:
     )
 
     assert recorded == [True]
+
+
+# --- webhook wake / coalesce additions ---
+
+
+def test_install_signal_handlers_enqueues_shutdown_sentinel() -> None:
+    event = threading.Event()
+    q: queue.Queue[object] = queue.Queue()
+    original_term = signal.getsignal(signal.SIGTERM)
+    original_int = signal.getsignal(signal.SIGINT)
+    try:
+        scheduler._install_signal_handlers(event, q)
+        os.kill(os.getpid(), signal.SIGTERM)
+        assert event.is_set()
+        assert q.get_nowait() is scheduler._SHUTDOWN
+    finally:
+        signal.signal(signal.SIGTERM, original_term)
+        signal.signal(signal.SIGINT, original_int)
+
+
+def test_wait_for_trigger_returns_true_when_event_preset() -> None:
+    q: queue.Queue[object] = queue.Queue()
+    event = threading.Event()
+    event.set()
+    result = scheduler._wait_for_trigger(q, event, cadence_seconds=600, debounce_seconds=0.0)
+    assert result is True
+
+
+def test_wait_for_trigger_consumes_work_item_without_full_cadence() -> None:
+    q: queue.Queue[object] = queue.Queue()
+    q.put(ReconcileRequest(reason="membership-changed"))
+    event = threading.Event()
+    result = scheduler._wait_for_trigger(q, event, cadence_seconds=600, debounce_seconds=0.0)
+    assert result is False
+    assert q.empty()
+
+
+def test_wait_for_trigger_shutdown_sentinel_returns_true() -> None:
+    q: queue.Queue[object] = queue.Queue()
+    q.put(scheduler._SHUTDOWN)
+    event = threading.Event()
+    result = scheduler._wait_for_trigger(q, event, cadence_seconds=600, debounce_seconds=0.0)
+    assert result is True
+
+
+def test_wait_for_trigger_coalesces_burst_into_one_wait() -> None:
+    q: queue.Queue[object] = queue.Queue()
+    for _ in range(3):
+        q.put(ReconcileRequest(reason="membership-changed"))
+    event = threading.Event()
+    result = scheduler._wait_for_trigger(q, event, cadence_seconds=600, debounce_seconds=0.05)
+    assert result is False
+    assert q.empty()  # all three drained within the settle window
+
+
+def test_wait_for_trigger_returns_false_on_cadence_tick() -> None:
+    q: queue.Queue[object] = queue.Queue()
+    event = threading.Event()
+    result = scheduler._wait_for_trigger(q, event, cadence_seconds=0.01, debounce_seconds=0.0)
+    assert result is False
+
+
+def test_run_forever_wakes_on_enqueued_item(tmp_path: Path) -> None:
+    # Large cadence: only the queued item can drive the second cycle.
+    cfg = _config(tmp_path, cadence_seconds=600)
+    q: queue.Queue[object] = queue.Queue()
+    q.put(ReconcileRequest(reason="membership-changed"))
+    event = threading.Event()
+    call_count = 0
+
+    def fake_reconcile(config: Config, *, dry_run: bool) -> ReconcileResult:  # noqa: ARG001
+        nonlocal call_count
+        call_count += 1
+        if call_count >= 2:
+            event.set()
+        return _ok_result()
+
+    rc = scheduler.run_forever(cfg, shutdown_event=event, work_queue=q, reconcile_fn=fake_reconcile)
+    assert rc == 0
+    assert call_count == 2
+
+
+def test_run_forever_breaks_on_shutdown_sentinel(tmp_path: Path) -> None:
+    cfg = _config(tmp_path, cadence_seconds=600)
+    q: queue.Queue[object] = queue.Queue()
+    event = threading.Event()
+    call_count = 0
+
+    def fake_reconcile(config: Config, *, dry_run: bool) -> ReconcileResult:  # noqa: ARG001
+        nonlocal call_count
+        call_count += 1
+        # Simulate the signal handler firing during the cycle.
+        event.set()
+        q.put(scheduler._SHUTDOWN)
+        return _ok_result()
+
+    rc = scheduler.run_forever(cfg, shutdown_event=event, work_queue=q, reconcile_fn=fake_reconcile)
+    assert rc == 0
+    assert call_count == 1

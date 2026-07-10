@@ -21,6 +21,7 @@ from door_sync.config import (
     ConfigIssue,
     OpsPaths,
     UnifiConfig,
+    WebhookConfig,
 )
 from door_sync.models import (
     Diff,
@@ -31,7 +32,7 @@ from door_sync.models import (
 )
 
 
-def _build_config(tmp_path: Path) -> Config:
+def _build_config(tmp_path: Path, *, webhook_enabled: bool = False) -> Config:
     return Config(
         cadence_seconds=600,
         civicrm=CivicrmConfig(
@@ -56,6 +57,15 @@ def _build_config(tmp_path: Path) -> Config:
             alert_flag=tmp_path / "alert.flag",
         ),
         alert=AlertConfig(transport="flag-file", smtp=None, mailgun=None),
+        webhook=WebhookConfig(
+            enabled=webhook_enabled,
+            host="127.0.0.1",
+            port=8787,
+            hmac_secret="s" * 32 if webhook_enabled else "",
+            max_body_bytes=65536,
+            max_skew_seconds=300,
+            debounce_seconds=0.0,
+        ),
     )
 
 
@@ -121,7 +131,7 @@ def test_run_daemon_calls_scheduler(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     _patch_config_load(monkeypatch, cfg)
     recorded: dict[str, object] = {}
 
-    def fake_run_forever(c: Config, *, dry_run: bool) -> int:
+    def fake_run_forever(c: Config, *, dry_run: bool, work_queue: object = None) -> int:
         recorded["config"] = c
         recorded["dry_run"] = dry_run
         return 0
@@ -142,7 +152,7 @@ def test_run_daemon_with_dry_run_flag(tmp_path: Path, monkeypatch: pytest.Monkey
     _patch_config_load(monkeypatch, cfg)
     recorded: dict[str, object] = {}
 
-    def fake_run_forever(_c: Config, *, dry_run: bool) -> int:
+    def fake_run_forever(_c: Config, *, dry_run: bool, work_queue: object = None) -> int:
         recorded["dry_run"] = dry_run
         return 0
 
@@ -242,3 +252,93 @@ def test_show_diff_prints_sections_and_exits_zero(
     assert not (tmp_path / "audit.jsonl").exists()
     assert not (tmp_path / "state.json").exists()
     assert not (tmp_path / "alert.flag").exists()
+
+
+# --- webhook daemon wiring ---
+
+
+def _ok_reconcile(c: Config, *, dry_run: bool) -> ReconcileResult:  # noqa: ARG001
+    return ReconcileResult(halted=False, reason=None, diff=Diff((), (), (), (), ()))
+
+
+def test_daemon_starts_and_stops_webhook_when_enabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _build_config(tmp_path, webhook_enabled=True)
+    _patch_config_load(monkeypatch, cfg)
+    recorded: dict[str, object] = {}
+
+    class FakeServer:
+        def __init__(self) -> None:
+            self.stopped = False
+
+        def stop(self, **_: object) -> None:
+            self.stopped = True
+
+    fake_server = FakeServer()
+
+    def fake_start(webhook_config: object, *, work_queue: object) -> FakeServer:
+        recorded["start_wcfg"] = webhook_config
+        recorded["start_queue"] = work_queue
+        return fake_server
+
+    def fake_run_forever(c: Config, *, dry_run: bool, work_queue: object = None) -> int:  # noqa: ARG001
+        recorded["run_queue"] = work_queue
+        return 0
+
+    from door_sync import scheduler
+
+    monkeypatch.setattr(main_mod.webhook, "start", fake_start)
+    monkeypatch.setattr(scheduler, "run_forever", fake_run_forever)
+
+    rc = main_mod.main(argv=["run"])
+
+    assert rc == 0
+    assert recorded["start_wcfg"] is cfg.webhook
+    # The webhook server and the scheduler share the SAME queue object.
+    assert recorded["start_queue"] is recorded["run_queue"]
+    assert fake_server.stopped is True
+
+
+def test_daemon_does_not_start_webhook_when_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _build_config(tmp_path, webhook_enabled=False)
+    _patch_config_load(monkeypatch, cfg)
+    started: list[object] = []
+
+    def fake_start(*_a: object, **_k: object) -> object:
+        started.append(object())
+        return object()
+
+    def fake_run_forever(c: Config, *, dry_run: bool, work_queue: object = None) -> int:  # noqa: ARG001
+        return 0
+
+    from door_sync import scheduler
+
+    monkeypatch.setattr(main_mod.webhook, "start", fake_start)
+    monkeypatch.setattr(scheduler, "run_forever", fake_run_forever)
+
+    rc = main_mod.main(argv=["run"])
+
+    assert rc == 0
+    assert started == []
+
+
+def test_run_once_never_starts_webhook(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Even with webhook enabled, --once must not stand up the server.
+    cfg = _build_config(tmp_path, webhook_enabled=True)
+    _patch_config_load(monkeypatch, cfg)
+    started: list[object] = []
+
+    def fake_start(*_a: object, **_k: object) -> object:
+        started.append(object())
+        return object()
+
+    monkeypatch.setattr(main_mod.webhook, "start", fake_start)
+    monkeypatch.setattr(orchestrator, "reconcile", _ok_reconcile)
+
+    rc = main_mod.main(argv=["run", "--once"])
+
+    assert rc == 0
+    assert started == []

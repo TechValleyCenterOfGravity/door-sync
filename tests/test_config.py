@@ -6,11 +6,13 @@ import pytest
 from door_sync.config import (
     _DEFAULT_ALERT_CONFIG,
     _DEFAULT_OPS_PATHS,
+    _DEFAULT_WEBHOOK_CONFIG,
     CivicrmConfig,
     Config,
     ConfigError,
     ConfigIssue,
     UnifiConfig,
+    WebhookConfig,
     _load_env_file,
     load,
 )
@@ -708,6 +710,9 @@ def test_example_files_parse(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.alert.transport == "flag-file"
     assert result.alert.smtp is None
     assert result.alert.mailgun is None
+    # webhook — commented out in example, defaults to disabled (no secret needed)
+    assert result.webhook == _DEFAULT_WEBHOOK_CONFIG
+    assert result.webhook.enabled is False
 
 
 # --- facility_code tests ---
@@ -1166,3 +1171,82 @@ def test_active_statuses_with_empty_entry_rejected(
     assert any(
         i.path == "civicrm.active_statuses" and "non-empty" in i.message for i in exc.value.issues
     )
+
+
+# --- webhook config tests ---
+
+
+def test_webhook_absent_defaults_disabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("WEBHOOK_HMAC_SECRET", raising=False)
+    cfg, env = _write_minimal_valid(tmp_path)
+    result = load(config_path=cfg, env_path=env)
+    assert result.webhook == _DEFAULT_WEBHOOK_CONFIG
+    assert result.webhook.enabled is False
+
+
+def test_webhook_enabled_requires_secret(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("WEBHOOK_HMAC_SECRET", raising=False)
+    cfg, env = _write_minimal_valid(tmp_path, extra_toml="[webhook]\nenabled = true\n")
+    with pytest.raises(ConfigError) as exc:
+        load(config_path=cfg, env_path=env)
+    assert any(i.path == "WEBHOOK_HMAC_SECRET" for i in exc.value.issues)
+
+
+def test_webhook_enabled_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(tmp_path, extra_toml="[webhook]\nenabled = true\nport = 9000\n")
+    env.write_text(env.read_text() + "WEBHOOK_HMAC_SECRET=" + "s" * 32 + "\n")
+    result = load(config_path=cfg, env_path=env)
+    assert result.webhook.enabled is True
+    assert result.webhook.host == "127.0.0.1"
+    assert result.webhook.port == 9000
+    assert result.webhook.hmac_secret == "s" * 32
+    assert result.webhook.max_skew_seconds == 300
+
+
+def test_webhook_port_out_of_range(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(
+        tmp_path, extra_toml="[webhook]\nenabled = true\nport = 70000\n"
+    )
+    env.write_text(env.read_text() + "WEBHOOK_HMAC_SECRET=" + "s" * 32 + "\n")
+    with pytest.raises(ConfigError) as exc:
+        load(config_path=cfg, env_path=env)
+    assert any(i.path == "webhook.port" for i in exc.value.issues)
+
+
+def test_webhook_bad_skew(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(
+        tmp_path, extra_toml="[webhook]\nenabled = true\nmax_skew_seconds = -5\n"
+    )
+    env.write_text(env.read_text() + "WEBHOOK_HMAC_SECRET=" + "s" * 32 + "\n")
+    with pytest.raises(ConfigError) as exc:
+        load(config_path=cfg, env_path=env)
+    assert any(i.path == "webhook.max_skew_seconds" for i in exc.value.issues)
+
+
+def test_webhook_secret_too_short(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("WEBHOOK_HMAC_SECRET", raising=False)
+    cfg, env = _write_minimal_valid(tmp_path, extra_toml="[webhook]\nenabled = true\n")
+    env.write_text(env.read_text() + "WEBHOOK_HMAC_SECRET=short\n")
+    with pytest.raises(ConfigError) as exc:
+        load(config_path=cfg, env_path=env)
+    assert any(i.path == "WEBHOOK_HMAC_SECRET" for i in exc.value.issues)
+
+
+def test_webhook_config_is_frozen() -> None:
+    w = WebhookConfig(
+        enabled=False,
+        host="127.0.0.1",
+        port=8787,
+        hmac_secret="",
+        max_body_bytes=65536,
+        max_skew_seconds=300,
+        debounce_seconds=2.0,
+    )
+    with pytest.raises(FrozenInstanceError):
+        w.enabled = True  # type: ignore[misc]

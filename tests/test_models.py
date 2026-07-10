@@ -6,6 +6,7 @@ from door_sync.models import (
     CheckResult,
     CiviMember,
     Diff,
+    ReconcileRequest,
     ReconcileResult,
     ResolvedMember,
     SafetyThresholds,
@@ -61,6 +62,19 @@ def test_reconcile_result_is_frozen() -> None:
     rr = ReconcileResult(halted=False, reason=None, diff=None)
     with pytest.raises(FrozenInstanceError):
         rr.halted = True  # type: ignore[misc]
+
+
+def test_reconcile_request_is_frozen() -> None:
+    r = ReconcileRequest(reason="membership-changed")
+    with pytest.raises(FrozenInstanceError):
+        r.reason = "other"  # type: ignore[misc]
+
+
+def test_reconcile_request_defaults_contact_id_none_and_accepts_value() -> None:
+    r = ReconcileRequest(reason="membership-changed")
+    assert r.contact_id is None
+    r2 = ReconcileRequest(reason="membership-changed", contact_id=42)
+    assert r2.contact_id == 42
 
 
 def test_tier_rule_is_frozen() -> None:
