@@ -109,9 +109,17 @@ audit log and state would come back owned by the wrong user after a reflash.
 
 **The unit comes from the package**, which points `ExecStart` at
 `/usr/bin/door-sync`. The hardening, `ReadWritePaths`, and
-`After=time-sync.target` all carry over unchanged from `deploy/`. The layer requires `fake-hwclock` and `systemd-timesyncd`
-for the same reason that ordering exists: the Pi has no RTC, and the webhook
-rejects signatures outside `max_skew_seconds`.
+`After=time-sync.target` all carry over unchanged from `deploy/`. The layer requires `systemd-timesyncd` for
+the same reason that ordering exists: the Pi has no RTC, and the webhook rejects
+signatures outside `max_skew_seconds`.
+
+It deliberately does **not** require `fake-hwclock`, despite the missing RTC.
+fake-hwclock restores the clock to the last shutdown time, which on a Pi that
+has been off for a day is wrong by a day — and a clock that is wrong by a day
+fails a 300-second freshness window exactly as surely as one that is unset. Only
+`After=time-sync.target` actually protects the webhook. Requiring it also breaks
+the build: something in this image stack masks `fake-hwclock.service`, so
+upstream's layer fails when it tries to enable it.
 
 ## cloudflared
 
