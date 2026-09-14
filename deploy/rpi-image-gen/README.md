@@ -240,8 +240,12 @@ rpi-image-gen is pinned to a commit. It is under active development, and the
 image that opens a door should not change because upstream moved. Override it
 for a one-off with the `workflow_dispatch` input.
 
-`SOURCE_DATE_EPOCH` comes from the commit being built, so the image is
-reproducible from a given revision rather than stamped with whenever CI ran.
+`SOURCE_DATE_EPOCH` comes from the commit being built, which pins the
+bootstrapped rootfs timestamps to the revision rather than to whenever CI ran.
+That is **not** bit-for-bit reproducibility, and the distinction is worth
+keeping straight: upstream's `builtin/hooks/cleanup01` writes
+`$(date +%Y-%m-%d)` into `/etc/rpi-issue`, so two builds of the same commit on
+different days still differ. Fixing that needs a change upstream.
 
 Artefacts are **discovered** rather than read from a hardcoded path: upstream
 does not document its deploy directory and is free to move it, so the workflow

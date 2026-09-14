@@ -42,8 +42,9 @@ jobs:
   deb:
     name: Debian package
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    # Read-only on purpose. This job executes repository code (build-deb.sh),
+    # which on a pull_request is the PR's version of it. Uploading to the
+    # release happens in the publish job, which runs no repo code at all.
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -67,6 +68,8 @@ jobs:
             version="$(python3 -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")"
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          # Timestamps from the commit, not from whenever CI ran.
+          echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)" >> "$GITHUB_ENV"
           echo "building door-sync $version"
 
       - name: Build .deb
@@ -123,19 +126,12 @@ jobs:
           path: dist/*.deb
           if-no-files-found: error
 
-      - name: Attach .deb to release
-        if: github.event_name == 'release'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${GITHUB_REF_NAME}" dist/door-sync_*_all.deb --clobber
-
   image:
     name: Appliance image
     needs: deb
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 120
-    permissions:
-      contents: write
+    # Read-only: this job runs repository code and third-party build hooks.
     env:
       VERSION: ${{ needs.deb.outputs.version }}
     steps:
@@ -201,8 +197,10 @@ jobs:
         working-directory: .rpi-image-gen
         run: |
           set -euo pipefail
-          # Reproducible: timestamps come from the commit being built, not from
-          # whenever CI happened to run.
+          # Pins the bootstrapped rootfs timestamps to the commit rather than to
+          # whenever CI ran. This is NOT bit-for-bit reproducibility: upstream's
+          # builtin/hooks/cleanup01 writes $(date +%Y-%m-%d) into /etc/rpi-issue,
+          # so images built on different days still differ.
           export SOURCE_DATE_EPOCH="$(git -C "$GITHUB_WORKSPACE" log -1 --pretty=%ct)"
           ./rpi-image-gen build \
             -S "$GITHUB_WORKSPACE/deploy/rpi-image-gen/" \
@@ -253,13 +251,32 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
-      - name: Attach image and OTA bundle to release
-        if: github.event_name == 'release'
+  # The only job with write access, and it runs no repository code: it
+  # downloads the artefacts the build jobs produced and uploads them. Keeping
+  # the write-scoped token away from anything a pull request can edit.
+  publish:
+    name: Attach to release
+    needs: [deb, image]
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artefacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Upload to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          for f in out/*; do
+          shopt -s nullglob
+          ls -lh assets/
+          for f in assets/*; do
+            [ -f "$f" ] || continue
             size=$(stat -c%s "$f")
             if [ "$size" -gt $((2 * 1024 * 1024 * 1024)) ]; then
               echo "::warning::$f is $(du -h "$f" | cut -f1), over the 2 GiB release asset limit -- skipping"

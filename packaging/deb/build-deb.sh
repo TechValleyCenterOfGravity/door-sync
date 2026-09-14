@@ -104,8 +104,11 @@ sed -i'' -e 's#^ExecStart=/usr/local/bin/door-sync#ExecStart=/usr/bin/door-sync#
 
 echo "==> resolving Debian dependencies from pyproject"
 DEPENDS="$(python3 - "$REPO_ROOT/pyproject.toml" <<'PY'
-import sys, tomllib
-from packaging.requirements import Requirement
+import re, sys, tomllib
+
+# Requirements are parsed with a regex rather than packaging.requirements,
+# deliberately: python3-packaging is not installed by default on a Debian
+# host, and this script is meant to run on one. tomllib is stdlib from 3.11.
 
 # PyPI distribution name -> Debian binary package. Anything not listed is a
 # build failure rather than a silent omission: a dependency added to pyproject
@@ -119,12 +122,16 @@ DEBIAN = {"flask": "python3-flask", "httpx": "python3-httpx", "waitress": "pytho
 deps = ["python3:any", "python3 (>= 3.11)", "adduser"]
 unmapped = []
 for raw in tomllib.load(open(sys.argv[1], "rb"))["project"]["dependencies"]:
-    req = Requirement(raw)
-    deb = DEBIAN.get(req.name.lower())
+    spec = raw.split(";")[0]                     # drop any environment marker
+    match = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", spec)
+    if not match:
+        sys.exit(f"could not parse dependency: {raw!r}")
+    name = match.group(1).lower().replace("_", "-")
+    deb = DEBIAN.get(name)
     if deb is None:
-        unmapped.append(req.name)
+        unmapped.append(name)
         continue
-    floors = [s.version for s in req.specifier if s.operator in (">=", "==")]
+    floors = re.findall(r"(?:>=|==)\s*([0-9][A-Za-z0-9._*+!-]*)", spec)
     deps.append(f"{deb} (>= {floors[0]})" if floors else deb)
 if unmapped:
     sys.exit(f"no Debian package mapped for: {', '.join(unmapped)} -- "
