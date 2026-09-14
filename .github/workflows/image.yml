@@ -95,8 +95,12 @@ jobs:
           # A ~6 GB image plus a bootstrapped rootfs does not comfortably fit
           # alongside the runner's preinstalled toolchains.
           df -h /
+          # Not AGENT_TOOLSDIRECTORY (/opt/hostedtoolcache): setup-uv installs
+          # uv there, and removing it makes the action's post-job cache prune
+          # fail the whole run after a successful build. The toolchains below
+          # are the real space anyway.
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-                      /usr/local/share/boost "${AGENT_TOOLSDIRECTORY:-/nonexistent}" || true
+                      /usr/local/share/boost || true
           df -h /
 
       - name: Install rpi-image-gen dependencies
