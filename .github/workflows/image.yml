@@ -123,31 +123,42 @@ jobs:
             -c door-sync-ab.yaml \
             -- IGconf_doorsync_deb="$GITHUB_WORKSPACE/dist/door-sync_${{ steps.version.outputs.version }}_all.deb"
 
-      # Upstream does not document the deploy directory, and it is free to move
-      # it, so discover the artefacts rather than hardcoding a path.
+      # Read the deploy directory rather than walking the whole tree: the
+      # chroot underneath is root-owned, so a broad find hits permission-denied
+      # and takes the step down with it. The build logs
+      # IGconf_deploy_dir=<work>/deploy-<version>.
       - name: Collect artefacts
         id: collect
         run: |
           set -euo pipefail
+          shopt -s nullglob
           mkdir -p out
-          found=$(find .rpi-image-gen -type f -name "${IMAGE_NAME}*" \
-                  \( -name '*.img' -o -name '*.update.tar.zst' -o -name '*.tar.*' \) -print)
-          if [ -z "$found" ]; then
-            echo "::error::no artefacts matching ${IMAGE_NAME}* were produced"
-            find .rpi-image-gen -maxdepth 4 -type d -name 'deploy*' -o -maxdepth 4 -type d -name 'work*' | head
+
+          echo "== deploy directories =="
+          sudo ls -la .rpi-image-gen/work/deploy-*/ || true
+
+          for d in .rpi-image-gen/work/deploy-*/; do
+            for f in "$d"*; do
+              [ -f "$f" ] || continue
+              sudo cp -a "$f" out/
+            done
+          done
+          sudo chown -R "$(id -u):$(id -g)" out
+
+          if [ -z "$(ls -A out)" ]; then
+            echo "::error::the deploy directory produced no files"
+            find .rpi-image-gen/work -maxdepth 2 -type d 2>/dev/null | head -30
             exit 1
           fi
-          echo "$found" | while read -r f; do
-            echo "  $(du -h "$f" | cut -f1)  $f"
-            cp "$f" out/
-          done
-          # Disk images are mostly empty; zstd takes a multi-GB image well under
-          # the 2 GiB per-asset limit on releases.
+
+          # image compression is already zstd by default, so this normally has
+          # nothing to do; it covers a config that turns compression off.
           for img in out/*.img; do
-            [ -e "$img" ] || continue
             zstd -19 -T0 --rm "$img"
           done
-          ls -lh out/ | tail -n +2
+
+          echo "== collected =="
+          ls -lh out/
 
       - name: Upload as build artefact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
