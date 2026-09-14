@@ -1,0 +1,32 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+  configure)
+    # Create the service account only when missing, so an image build that pins
+    # the uid (deploy/rpi-image-gen) wins and this becomes a no-op. /persistent
+    # outlives any single image there, and a shifting uid would leave the audit
+    # log owned by the wrong user.
+    if ! getent group door-sync >/dev/null; then
+      addgroup --system door-sync
+    fi
+    if ! getent passwd door-sync >/dev/null; then
+      adduser --system --ingroup door-sync --home /nonexistent \
+        --no-create-home --shell /usr/sbin/nologin door-sync
+    fi
+
+    install -d -m0750 -o door-sync -g door-sync /var/lib/door-sync /var/log/door-sync
+    install -d -m0755 /etc/door-sync
+
+    if [ -d /run/systemd/system ]; then
+      systemctl daemon-reload >/dev/null 2>&1 || true
+    fi
+
+    # Deliberately not enabled or started. The unit has no leading dash on
+    # EnvironmentFile, so without /etc/door-sync/env it would restart-loop --
+    # correct fail-secure behaviour, but a poor thing to trigger from apt.
+    # See /usr/share/door-sync/ for the example config and env file.
+    ;;
+esac
+
+exit 0
