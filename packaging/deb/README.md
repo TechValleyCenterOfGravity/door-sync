@@ -55,6 +55,15 @@ The `Depends` line is **generated from `pyproject.toml`**, so the two cannot
 drift. A dependency with no Debian counterpart fails the build rather than
 shipping a package that cannot satisfy its own imports.
 
+## adduser
+
+The maintainer scripts use `addgroup`/`adduser`/`deluser`, so the package
+depends on `adduser`. It is Priority: important, so most Debian systems already
+have it — but minimal images do not, including the `debian:trixie-slim` that CI
+verifies against, where `postinst` fails with `addgroup: not found`. Caught by
+the PR build rather than at release time, which is the argument for that trigger
+in one line.
+
 ## Deliberate choices
 
 **The service is installed but not started.** `door-sync.service` has no leading

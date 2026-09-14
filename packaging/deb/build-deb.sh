@@ -112,7 +112,11 @@ from packaging.requirements import Requirement
 # without a Debian counterpart would otherwise ship broken.
 DEBIAN = {"flask": "python3-flask", "httpx": "python3-httpx", "waitress": "python3-waitress"}
 
-deps = ["python3:any", "python3 (>= 3.11)"]
+# adduser provides addgroup/adduser/deluser, used by the maintainer scripts.
+# Priority: important, so most systems have it -- but minimal images (including
+# debian:*-slim, which CI verifies against) do not, and postinst fails with
+# "addgroup: not found" without this.
+deps = ["python3:any", "python3 (>= 3.11)", "adduser"]
 unmapped = []
 for raw in tomllib.load(open(sys.argv[1], "rb"))["project"]["dependencies"]:
     req = Requirement(raw)
