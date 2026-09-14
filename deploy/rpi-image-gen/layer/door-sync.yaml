@@ -5,7 +5,7 @@
 #  Debian package, plus the slot-shared state it and the tunnel need to survive
 #  an A/B flip.
 # X-Env-Layer-Version: 0.2.0
-# X-Env-Layer-Requires: systemd-min,systemd-timesyncd,fake-hwclock,ca-certificates,
+# X-Env-Layer-Requires: systemd-min,systemd-timesyncd,ca-certificates,
 #  cloudflared,rpi-connect-lite,rpi-connect-ota
 # X-Env-VarPrefix: doorsync
 # X-Env-Var-deb:
