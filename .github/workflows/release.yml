@@ -1,0 +1,297 @@
+name: Release
+
+# Produces everything a release ships: the door-sync Debian package, and the
+# immutable A/B appliance image with its OTA bundle.
+#
+# Two jobs because they need different machines. The package is Architecture:
+# all and builds in seconds on amd64; the image needs an arm64 host with real
+# mount/unshare privileges and takes tens of minutes. The image job consumes the
+# package the deb job built rather than rebuilding it, so a release ships the
+# byte-identical artefact that was verified.
+#
+# Also runs on pull requests that touch packaging or the image definition. That
+# is deliberately expensive: an image build is the only thing that catches a
+# broken layer, and every defect found in this stack so far was found that way.
+
+on:
+  release:
+    types: [published]
+  pull_request:
+    paths:
+      - 'packaging/**'
+      - 'deploy/rpi-image-gen/**'
+      - 'pyproject.toml'
+      - '.github/workflows/release.yml'
+  workflow_dispatch:
+    inputs:
+      rpi_image_gen_ref:
+        description: rpi-image-gen commit to build with
+        required: false
+        default: d1021e82dd578b588cc3b4d45cd7b4b86e57b796
+
+permissions:
+  contents: read
+
+env:
+  # Pinned: rpi-image-gen is under active development, and the image that opens
+  # a door should not change because upstream moved.
+  RPI_IMAGE_GEN_REF: d1021e82dd578b588cc3b4d45cd7b4b86e57b796
+  IMAGE_NAME: door-sync-ab
+
+jobs:
+  deb:
+    name: Debian package
+    runs-on: ubuntu-latest
+    # Read-only on purpose. This job executes repository code (build-deb.sh),
+    # which on a pull_request is the PR's version of it. Uploading to the
+    # release happens in the publish job, which runs no repo code at all.
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
+        with:
+          version: "0.12.13"
+
+      - name: Determine version
+        id: version
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "release" ]; then
+            # Releases are tagged vX.Y.Z; the package version drops the v.
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="$(python3 -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # Timestamps from the commit, not from whenever CI ran.
+          echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)" >> "$GITHUB_ENV"
+          echo "building door-sync $version"
+
+      - name: Build .deb
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: packaging/deb/build-deb.sh --version "$VERSION" --output dist
+
+      # The real test of the Depends line. Architecture is 'all', so this amd64
+      # runner can verify a package destined for an arm64 Pi.
+      - name: Verify install on Debian trixie
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD/dist:/dist:ro" debian:trixie-slim sh -euc '
+            apt-get update -qq
+
+            echo "== install (apt resolves Depends from trixie) =="
+            apt-get install -y --no-install-recommends /dist/door-sync_*_all.deb
+
+            echo "== the CLI runs against system python =="
+            door-sync --help > /dev/null
+            head -1 /usr/bin/door-sync | grep -qx "#!/usr/bin/python3"
+
+            echo "== dependencies come from dpkg, not a bundled venv =="
+            for mod in flask httpx waitress; do
+              path=$(python3 -c "import $mod,os;print(os.path.dirname($mod.__file__))")
+              dpkg -S "$path" >/dev/null || { echo "$mod is not dpkg-owned: $path"; exit 1; }
+              echo "  $mod -> $(dpkg -S "$path" | cut -d: -f1)"
+            done
+
+            echo "== service account and state dirs created, service NOT started =="
+            getent passwd door-sync > /dev/null
+            test -d /var/lib/door-sync && test -d /var/log/door-sync
+            grep -q "^ExecStart=/usr/bin/door-sync" /usr/lib/systemd/system/door-sync.service
+
+            echo "== purge keeps the audit log =="
+            touch /var/log/door-sync/audit.jsonl
+            apt-get purge -y door-sync > /dev/null
+            test -f /var/log/door-sync/audit.jsonl || { echo "purge destroyed the audit log"; exit 1; }
+            test ! -d /var/lib/door-sync || { echo "purge left state behind"; exit 1; }
+
+            echo "all checks passed"
+          '
+
+      - name: Package contents
+        run: |
+          deb=$(echo dist/door-sync_*_all.deb)
+          dpkg-deb --info "$deb"
+          dpkg-deb --contents "$deb"
+
+      # Handed to the image job so the image embeds the package that was just
+      # verified, not a rebuild of it.
+      - name: Upload .deb
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: door-sync-deb-${{ steps.version.outputs.version }}
+          path: dist/*.deb
+          if-no-files-found: error
+
+  image:
+    name: Appliance image
+    needs: deb
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    # Read-only: this job runs repository code and third-party build hooks.
+    env:
+      VERSION: ${{ needs.deb.outputs.version }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Check out rpi-image-gen
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: raspberrypi/rpi-image-gen
+          ref: ${{ github.event.inputs.rpi_image_gen_ref || env.RPI_IMAGE_GEN_REF }}
+          path: .rpi-image-gen
+          persist-credentials: false
+
+      - name: Download the .deb
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: door-sync-deb-${{ env.VERSION }}
+          path: dist
+
+      # artefact.version is what an operator sees when choosing whether to
+      # deploy or roll back, so a release whose tag disagrees with it would ship
+      # a bundle labelled with the wrong version. Fail rather than mislabel a
+      # door controller update.
+      - name: Check artefact version matches the release
+        if: github.event_name == 'release'
+        run: |
+          set -euo pipefail
+          declared=$(python3 -c "import re;print(re.search(r'^artefact:\s*\n(?:\s*#.*\n)*\s*version:\s*(\S+)', open('deploy/rpi-image-gen/config/door-sync-ab.yaml').read(), re.M).group(1))")
+          if [ "$declared" != "$VERSION" ]; then
+            echo "::error::artefact.version is $declared but the release is $VERSION."
+            echo "::error::Bump artefact.version in deploy/rpi-image-gen/config/door-sync-ab.yaml."
+            exit 1
+          fi
+
+      - name: Free up disk space
+        run: |
+          # A ~6 GB image plus a bootstrapped rootfs does not comfortably fit
+          # alongside the runner's preinstalled toolchains.
+          #
+          # Not AGENT_TOOLSDIRECTORY (/opt/hostedtoolcache): actions install
+          # tools there, and removing it makes their post-job steps fail the
+          # whole run after a successful build.
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost || true
+          df -h /
+
+      - name: Install rpi-image-gen dependencies
+        working-directory: .rpi-image-gen
+        run: |
+          sudo apt-get update
+          # zstd compresses the disk image below the release asset limit.
+          # install_deps.sh may pull it in already; do not rely on that.
+          sudo apt-get install -y --no-install-recommends zstd
+          # rpi-image-gen mounts pseudo-filesystems inside a private namespace
+          # under $HOME; without this the unshare cannot traverse into it.
+          sudo chmod o+x /home/runner
+          sudo ./install_deps.sh
+
+      - name: Build image and OTA bundle
+        working-directory: .rpi-image-gen
+        run: |
+          set -euo pipefail
+          # Pins the bootstrapped rootfs timestamps to the commit rather than to
+          # whenever CI ran. This is NOT bit-for-bit reproducibility: upstream's
+          # builtin/hooks/cleanup01 writes $(date +%Y-%m-%d) into /etc/rpi-issue,
+          # so images built on different days still differ.
+          export SOURCE_DATE_EPOCH="$(git -C "$GITHUB_WORKSPACE" log -1 --pretty=%ct)"
+          ./rpi-image-gen build \
+            -S "$GITHUB_WORKSPACE/deploy/rpi-image-gen/" \
+            -c door-sync-ab.yaml \
+            -- IGconf_doorsync_deb="$GITHUB_WORKSPACE/dist/door-sync_${VERSION}_all.deb"
+
+      # Read the deploy directory rather than walking the whole tree: the chroot
+      # underneath is root-owned, so a broad find hits permission-denied and
+      # takes the step down with it. The build logs
+      # IGconf_deploy_dir=<work>/deploy-<version>.
+      - name: Collect artefacts
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          mkdir -p out
+
+          echo "== deploy directories =="
+          sudo ls -la .rpi-image-gen/work/deploy-*/ || true
+
+          for d in .rpi-image-gen/work/deploy-*/; do
+            for f in "$d"*; do
+              [ -f "$f" ] || continue
+              sudo cp -a "$f" out/
+            done
+          done
+          sudo chown -R "$(id -u):$(id -g)" out
+
+          if [ -z "$(ls -A out)" ]; then
+            echo "::error::the deploy directory produced no files"
+            find .rpi-image-gen/work -maxdepth 2 -type d 2>/dev/null | head -30
+            exit 1
+          fi
+
+          # image compression is already zstd by default, so this normally has
+          # nothing to do; it covers a config that turns compression off.
+          for img in out/*.img; do
+            zstd -19 -T0 --rm "$img"
+          done
+
+          required=("out/${IMAGE_NAME}.img.zst" "out/${IMAGE_NAME}.update.tar.zst")
+          for f in "${required[@]}"; do
+            if [ ! -f "$f" ]; then
+              echo "::error::missing required artefact: $f"
+              find .rpi-image-gen/work -maxdepth 2 -type d 2>/dev/null | head -30
+              exit 1
+            fi
+          done
+
+          echo "== collected =="
+          ls -lh out/
+
+      - name: Upload image and OTA bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ env.IMAGE_NAME }}-${{ env.VERSION }}
+          path: out/*
+          retention-days: 14
+          if-no-files-found: error
+
+  # The only job with write access, and it runs no repository code: it
+  # downloads the artefacts the build jobs produced and uploads them. Keeping
+  # the write-scoped token away from anything a pull request can edit.
+  publish:
+    name: Attach to release
+    needs: [deb, image]
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artefacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          ls -lh assets/
+          for f in assets/*; do
+            [ -f "$f" ] || continue
+            size=$(stat -c%s "$f")
+            if [ "$size" -gt $((2 * 1024 * 1024 * 1024)) ]; then
+              echo "::warning::$f is $(du -h "$f" | cut -f1), over the 2 GiB release asset limit -- skipping"
+              continue
+            fi
+            gh release upload "${GITHUB_REF_NAME}" "$f" --clobber
+          done

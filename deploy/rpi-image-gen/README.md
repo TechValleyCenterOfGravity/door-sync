@@ -223,6 +223,41 @@ no credentials in the image) or an embedded single-use auth key passed at build
 time. Prefer the former — an auth key baked into an image is a secret living in
 an artefact you may later want to rebuild or hand to someone else.
 
+## Building it in CI
+
+`.github/workflows/release.yml` builds the image and OTA bundle on
+`ubuntu-24.04-arm`, which is what upstream uses for its own images — native
+arm64, no container, no QEMU (which upstream does not formally support). It runs
+on published releases, on demand, and on pull requests that touch the image
+definition, because a build that takes tens of minutes does not belong on every
+push.
+
+The image job takes the `.deb` from the package job in the same workflow rather
+than rebuilding it, so a release ships the byte-identical artefact that was
+verified against Debian trixie.
+
+rpi-image-gen is pinned to a commit. It is under active development, and the
+image that opens a door should not change because upstream moved. Override it
+for a one-off with the `workflow_dispatch` input.
+
+`SOURCE_DATE_EPOCH` comes from the commit being built, which pins the
+bootstrapped rootfs timestamps to the revision rather than to whenever CI ran.
+That is **not** bit-for-bit reproducibility, and the distinction is worth
+keeping straight: upstream's `builtin/hooks/cleanup01` writes
+`$(date +%Y-%m-%d)` into `/etc/rpi-issue`, so two builds of the same commit on
+different days still differ. Fixing that needs a change upstream.
+
+Artefacts are **discovered** rather than read from a hardcoded path: upstream
+does not document its deploy directory and is free to move it, so the workflow
+searches for `door-sync-ab*` and fails loudly if nothing turns up. The disk image
+is zstd-compressed, which takes a mostly-empty multi-GB image well under the
+2 GiB per-asset limit on releases; anything still over that is skipped with a
+warning rather than failing the run.
+
+For releases the workflow asserts that `artefact.version` in the config matches
+the tag. A bundle labelled with the wrong version is worse than a failed build
+when the thing being updated is a door controller.
+
 ## Known gaps
 
 - **`alert.flag` lives in `/run`** and is therefore cleared by any reboot, an OTA
