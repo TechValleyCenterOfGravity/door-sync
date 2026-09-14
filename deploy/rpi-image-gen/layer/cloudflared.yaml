@@ -9,13 +9,13 @@
 # X-Env-Layer-Requires: ca-certificates
 # X-Env-VarPrefix: cloudflared
 # X-Env-Var-version: 2026.9.1
-# X-Env-Var-version-Description: Pinned cloudflared release tag.
+# X-Env-Var-version-Desc: Pinned cloudflared release tag.
 # X-Env-Var-sha: 2a870d5bf6ea74d16c0923b804eabbf4943f1fd7c63a5c20fd41cc66b629c725
-# X-Env-Var-sha-Description: SHA256 of cloudflared-linux-arm64.deb for that tag.
+# X-Env-Var-sha-Desc: SHA256 of cloudflared-linux-arm64.deb for that tag.
 # X-Env-Var-deb:
-# X-Env-Var-deb-Description: Optional local path to that .deb, for offline builds.
+# X-Env-Var-deb-Desc: Optional local path to that .deb, for offline builds.
 # X-Env-Var-uid: 901
-# X-Env-Var-uid-Description: Fixed uid/gid for the cloudflared service account.
+# X-Env-Var-uid-Desc: Fixed uid/gid for the cloudflared service account.
 # METAEND
 ---
 mmdebstrap:

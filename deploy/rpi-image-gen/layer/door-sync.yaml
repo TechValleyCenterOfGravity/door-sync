@@ -9,9 +9,9 @@
 #  cloudflared,rpi-connect-lite,rpi-connect-ota
 # X-Env-VarPrefix: doorsync
 # X-Env-Var-deb:
-# X-Env-Var-deb-Description: Host path to the door-sync .deb (packaging/deb/build-deb.sh, or a release asset).
+# X-Env-Var-deb-Desc: Host path to the door-sync .deb (packaging/deb/build-deb.sh, or a release asset).
 # X-Env-Var-uid: 900
-# X-Env-Var-uid-Description: Fixed uid/gid for the door-sync service account.
+# X-Env-Var-uid-Desc: Fixed uid/gid for the door-sync service account.
 # METAEND
 ---
 mmdebstrap:
