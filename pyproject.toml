@@ -1,6 +1,6 @@
 [project]
 name = "door-sync"
-version = "0.1.0"
+version = "0.2.0"
 description = "CiviCRM-to-UniFi sync service for door access control"
 readme = "README.md"
 authors = [
