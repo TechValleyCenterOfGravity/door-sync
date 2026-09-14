@@ -1,0 +1,104 @@
+# METABEGIN
+# X-Env-Layer-Name: door-sync
+# X-Env-Layer-Category: general
+# X-Env-Layer-Desc: CiviCRM to UniFi Access reconciler, its cloudflared tunnel,
+#  and the slot-shared state both need to survive an A/B flip.
+# X-Env-Layer-Version: 0.1.0
+# X-Env-Layer-Requires: systemd-min,systemd-timesyncd,fake-hwclock,ca-certificates,
+#  cloudflared,rpi-connect-lite,rpi-connect-ota
+# X-Env-VarPrefix: doorsync
+# X-Env-Var-wheel:
+# X-Env-Var-wheel-Description: Host path to the door_sync-*.whl to bake in (uv build).
+# X-Env-Var-deploy:
+# X-Env-Var-deploy-Description: Host path to door-sync's deploy/ directory (units, logrotate).
+# X-Env-Var-uid: 900
+# X-Env-Var-uid-Description: Fixed uid/gid for the door-sync service account.
+# METAEND
+---
+mmdebstrap:
+  packages:
+    - python3
+    - python3-venv
+    - logrotate
+
+  customize-hooks:
+    # --- service accounts -------------------------------------------------
+    # UID is PINNED, not allocated. /persistent outlives any single image, so
+    # if a later build allocated a different uid the existing audit log and
+    # state would come back owned by the wrong user after a reflash.
+    # The cloudflared account belongs to the cloudflared layer.
+    - |-
+      set -eu
+      chroot "$1" sh -c '
+        getent group door-sync >/dev/null 2>&1 ||
+          addgroup --system --gid '"${IGconf_doorsync_uid}"' door-sync
+        getent passwd door-sync >/dev/null 2>&1 ||
+          adduser --system --uid '"${IGconf_doorsync_uid}"' --ingroup door-sync \
+            --home /nonexistent --no-create-home --shell /usr/sbin/nologin door-sync
+      '
+
+    # --- the application ---------------------------------------------------
+    # Baked into the immutable root as a venv. The root is read-only at runtime,
+    # so there is no on-device pip; an upgrade ships a new slot.
+    - |-
+      set -eu
+      install -d -m0755 "$1/opt/door-sync"
+      install -m0644 "${IGconf_doorsync_wheel}" "$1/tmp/door_sync.whl"
+      chroot "$1" python3 -m venv /opt/door-sync/venv
+      chroot "$1" /opt/door-sync/venv/bin/pip install --no-cache-dir --no-compile /tmp/door_sync.whl
+      rm -f "$1/tmp/door_sync.whl"
+      chroot "$1" /opt/door-sync/venv/bin/door-sync --help >/dev/null
+
+    # --- config directory (contents provisioned on device, not baked) ------
+    # Declared slot-shared below, so this empty dir is replaced at boot by a
+    # writable bind mount from /persistent. Secrets never enter the image; the
+    # example config ships read-only for reference.
+    - |-
+      set -eu
+      install -d -m0755 "$1/etc/door-sync"
+      install -d -m0755 "$1/usr/share/door-sync"
+      install -m0644 "${IGconf_doorsync_deploy}/../config.example.toml" \
+        "$1/usr/share/door-sync/config.example.toml"
+      install -m0644 "${IGconf_doorsync_deploy}/../.env.example" \
+        "$1/usr/share/door-sync/env.example"
+
+    # --- writable state ----------------------------------------------------
+    - |-
+      set -eu
+      install -d -m0750 -o "${IGconf_doorsync_uid}" -g "${IGconf_doorsync_uid}" \
+        "$1/var/lib/door-sync" "$1/var/log/door-sync"
+
+    # --- slot-shared state -------------------------------------------------
+    # /var is per-slot. Without this the append-only audit log -- the record of
+    # who had door access when -- silently restarts on every OTA, and the
+    # last-success timestamp resets. /etc/door-sync is shared so the operator's
+    # config and secrets survive a slot flip and stay writable on a ro root.
+    - |-
+      set -eu
+      install -d -m0755 "$1/etc/rpi-image-gen/slot-shared.d"
+      cat > "$1/etc/rpi-image-gen/slot-shared.d/door-sync.conf" <<'EOF'
+      Version=1
+      Path=/var/lib/door-sync
+      Path=/var/log/door-sync
+      Path=/etc/door-sync
+      EOF
+      chmod 0644 "$1/etc/rpi-image-gen/slot-shared.d/door-sync.conf"
+
+    # --- systemd units + logrotate ----------------------------------------
+    # ExecStart is rewritten to the baked venv; everything else in the unit
+    # (hardening, ReadWritePaths, After=time-sync.target) is used as-is.
+    - |-
+      set -eu
+      install -m0644 "${IGconf_doorsync_deploy}/door-sync.service" \
+        "$1/usr/lib/systemd/system/door-sync.service"
+      sed -i 's#^ExecStart=.*#ExecStart=/opt/door-sync/venv/bin/door-sync run#' \
+        "$1/usr/lib/systemd/system/door-sync.service"
+      install -m0644 "${IGconf_doorsync_deploy}/cloudflared.service" \
+        "$1/usr/lib/systemd/system/cloudflared.service"
+      install -m0644 "${IGconf_doorsync_deploy}/door-sync.logrotate" \
+        "$1/etc/logrotate.d/door-sync"
+      install -m0644 "${IGconf_doorsync_deploy}/cloudflared-config.yml" \
+        "$1/usr/share/door-sync/cloudflared-config.example.yml"
+
+    - $BDEBSTRAP_HOOKS/enable-units "$1" door-sync
+    - $BDEBSTRAP_HOOKS/enable-units "$1" cloudflared

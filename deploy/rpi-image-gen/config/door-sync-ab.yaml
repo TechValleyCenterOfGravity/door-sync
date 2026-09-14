@@ -1,0 +1,40 @@
+# door-sync appliance: immutable A/B root, OTA-updatable via Raspberry Pi Connect.
+#
+# Build (arm64 Debian host -- see README):
+#   uv build --out-dir dist
+#   rpi-image-gen build -S ./deploy/rpi-image-gen/ -c door-sync-ab.yaml -- \
+#     IGconf_doorsync_wheel=$PWD/dist/door_sync-0.1.0-py3-none-any.whl \
+#     IGconf_doorsync_deploy=$PWD/deploy
+#
+# Produces door-sync-ab.update.tar.zst in the deploy dir alongside the disk
+# image -- that bundle is what Raspberry Pi Connect pushes to the device.
+
+include:
+  file: trixie-minbase-ab.yaml
+
+device:
+  # Sets the device name in Raspberry Pi Connect. Change per door/site.
+  hostname: door-sync-1
+  # Inherited config targets rpi5; override to match the actual hardware.
+  layer: rpi4
+
+artefact:
+  # Bump for every image you cut. This is the version an operator sees when
+  # deciding whether to deploy or roll back, so keep it in step with the
+  # door-sync release it carries.
+  version: 0.1.0
+
+image:
+  name: door-sync-ab
+
+  # Inherited: boot 128M / system 512M / data 1G.
+  # 512M does not fit python3 plus a venv carrying httpx, flask and waitress
+  # with headroom; this is per slot and there are two of them.
+  system_part_size: 1G
+
+  # Shared across slots. Sized for audit.jsonl growth between logrotate runs --
+  # the only thing here that accumulates.
+  data_part_size: 4G
+
+layer:
+  app: door-sync
