@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from door_sync import config
 from door_sync.config import (
     _DEFAULT_ALERT_CONFIG,
     _DEFAULT_OPS_PATHS,
@@ -1250,3 +1251,52 @@ def test_webhook_config_is_frozen() -> None:
     )
     with pytest.raises(FrozenInstanceError):
         w.enabled = True  # type: ignore[misc]
+
+
+# --- webhook host / floor enforcement ---
+
+
+def test_webhook_non_loopback_host_rejected_and_falls_back() -> None:
+    for bad in ("0.0.0.0", "::", "192.168.1.50", "door.example.org"):
+        issues: list[ConfigIssue] = []
+        cfg = config._validate_webhook(
+            {"webhook": {"enabled": True, "host": bad}}, issues, lambda _n: "x" * 16
+        )
+        assert any(i.path == "webhook.host" for i in issues), bad
+        assert cfg.host == "127.0.0.1", bad  # fail secure
+
+
+def test_webhook_loopback_hosts_accepted() -> None:
+    for good in ("127.0.0.1", "127.0.0.2", "::1", "localhost"):
+        issues: list[ConfigIssue] = []
+        cfg = config._validate_webhook(
+            {"webhook": {"enabled": True, "host": good}}, issues, lambda _n: "x" * 16
+        )
+        assert not [i for i in issues if i.path == "webhook.host"], good
+        assert cfg.host == good, good
+
+
+def test_webhook_non_loopback_allowed_with_explicit_opt_in() -> None:
+    issues: list[ConfigIssue] = []
+    cfg = config._validate_webhook(
+        {"webhook": {"enabled": True, "host": "0.0.0.0", "allow_non_loopback": True}},
+        issues,
+        lambda _n: "x" * 16,
+    )
+    assert not [i for i in issues if i.path == "webhook.host"]
+    assert cfg.host == "0.0.0.0"
+
+
+def test_webhook_degenerate_skew_and_debounce_rejected() -> None:
+    """0 used to validate cleanly: max_skew_seconds=0 rejects nearly every
+    request, debounce_seconds=0 disables burst coalescing entirely."""
+    issues: list[ConfigIssue] = []
+    cfg = config._validate_webhook(
+        {"webhook": {"enabled": True, "max_skew_seconds": 0, "debounce_seconds": 0.0}},
+        issues,
+        lambda _n: "x" * 16,
+    )
+    assert any(i.path == "webhook.max_skew_seconds" for i in issues)
+    assert any(i.path == "webhook.debounce_seconds" for i in issues)
+    assert cfg.max_skew_seconds == 300
+    assert cfg.debounce_seconds == 2.0

@@ -7,6 +7,7 @@ This module is not pure (it does file I/O), but it does NOT call sys.exit.
 Errors surface as ConfigError so callers can format and exit on their own terms.
 """
 
+import ipaddress
 import os
 import re
 import tomllib
@@ -147,13 +148,15 @@ class WebhookConfig:
 
     Parameters:
         enabled: Whether daemon mode starts the local webhook HTTP server.
-        host: Bind address. Loopback only in production.
+        host: Bind address. Must be loopback unless the [webhook]
+            allow_non_loopback escape hatch is set; see _validate_webhook.
         port: TCP port for the local webhook server.
         hmac_secret: Shared secret for HMAC-SHA256 request signing (env
             WEBHOOK_HMAC_SECRET). Required only when enabled.
         max_body_bytes: Reject request bodies larger than this (fail-closed).
         max_skew_seconds: Reject signed requests whose timestamp is more than
-            this many seconds from now (replay protection).
+            this many seconds from now. This bounds the replay window; it does
+            not prevent replay within it (see webhook._verify_signature).
         debounce_seconds: Settle window before a triggered reconcile runs, so a
             burst of webhooks collapses into one cycle.
     """
@@ -165,6 +168,25 @@ class WebhookConfig:
     max_body_bytes: int
     max_skew_seconds: int
     debounce_seconds: float
+
+
+# Below this the freshness window is so tight that legitimate requests fail --
+# max_skew_seconds = 0 accepts only a request signed in the same second.
+_MIN_SKEW_SECONDS = 30
+# Below this the settle window cannot coalesce a burst, so every accepted
+# webhook drives its own full reconcile.
+_MIN_DEBOUNCE_SECONDS = 0.5
+
+
+def _is_loopback(host: str) -> bool:
+    """True for addresses that cannot be reached off-box. Non-IP names other
+    than "localhost" are treated as non-loopback (fail secure)."""
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 _DEFAULT_WEBHOOK_CONFIG = WebhookConfig(
@@ -377,6 +399,20 @@ def _validate_webhook(
     if not isinstance(host, str) or not host:
         issues.append(ConfigIssue(path="webhook.host", message="must be non-empty string"))
         host = "127.0.0.1"
+    elif not _is_loopback(host) and section.get("allow_non_loopback") is not True:
+        # The receiver is reached through the Cloudflare Tunnel; binding it
+        # anywhere else drops the Access service-token policy that is the first
+        # of the two locks in front of it, leaving only the HMAC.
+        issues.append(
+            ConfigIssue(
+                path="webhook.host",
+                message=(
+                    f"{host!r} is not a loopback address; the receiver must not be exposed "
+                    "directly (set webhook.allow_non_loopback = true to override)"
+                ),
+            )
+        )
+        host = "127.0.0.1"
 
     port = section.get("port", 8787)
     if isinstance(port, bool) or not isinstance(port, int):
@@ -396,17 +432,27 @@ def _validate_webhook(
         max_body = 65536
 
     max_skew = section.get("max_skew_seconds", 300)
-    if isinstance(max_skew, bool) or not isinstance(max_skew, int) or max_skew < 0:
-        issues.append(ConfigIssue(path="webhook.max_skew_seconds", message="must be an int >= 0"))
+    if isinstance(max_skew, bool) or not isinstance(max_skew, int) or max_skew < _MIN_SKEW_SECONDS:
+        issues.append(
+            ConfigIssue(
+                path="webhook.max_skew_seconds",
+                message=f"must be an int >= {_MIN_SKEW_SECONDS}",
+            )
+        )
         max_skew = 300
 
     debounce_raw = section.get("debounce_seconds", 2.0)
     if (
         isinstance(debounce_raw, bool)
         or not isinstance(debounce_raw, (int, float))
-        or debounce_raw < 0
+        or debounce_raw < _MIN_DEBOUNCE_SECONDS
     ):
-        issues.append(ConfigIssue(path="webhook.debounce_seconds", message="must be a number >= 0"))
+        issues.append(
+            ConfigIssue(
+                path="webhook.debounce_seconds",
+                message=f"must be a number >= {_MIN_DEBOUNCE_SECONDS}",
+            )
+        )
         debounce = 2.0
     else:
         debounce = float(debounce_raw)

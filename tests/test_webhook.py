@@ -295,3 +295,27 @@ def test_body_cap_is_passed_to_waitress(monkeypatch) -> None:  # type: ignore[no
     server = webhook.start(wcfg, work_queue=queue.Queue())
     server.stop(timeout=0.5)
     assert captured["max_request_body_size"] == 4096
+
+
+def test_stop_warns_when_the_serving_thread_will_not_die(caplog) -> None:  # type: ignore[no-untyped-def]
+    """join() result was discarded, so a thread that refused to stop was
+    invisible to the operator."""
+    import threading
+
+    never_stops = threading.Event()
+    thread = threading.Thread(target=never_stops.wait, daemon=True)
+    thread.start()
+
+    class _Server:
+        def close(self) -> None:
+            pass
+
+    server = webhook.WebhookServer(_Server(), thread, threading.Event())
+    try:
+        with caplog.at_level(logging.WARNING, logger="door_sync.webhook"):
+            server.stop(timeout=0.05)
+        text = "\n".join(r.getMessage() for r in caplog.records)
+        assert "did not stop within" in text
+    finally:
+        never_stops.set()
+        thread.join(timeout=2)

@@ -47,9 +47,15 @@ def _verify_signature(
     """Return True iff `signature` is a valid HMAC-SHA256 over ``f"{ts}." + body``
     under `secret`, and `timestamp` is within `max_skew_seconds` of `now`.
 
-    Constant-time compare; fail-closed on any missing or malformed input. The
-    timestamp binding gives replay protection. `signature` may be bare hex or
-    ``sha256=<hex>``.
+    Constant-time compare; fail-closed on any missing or malformed input.
+    `signature` may be bare hex or ``sha256=<hex>``.
+
+    The timestamp bounds *freshness*, which is weaker than replay protection:
+    there is no nonce or seen-signature cache, so a captured request can be
+    replayed until it ages out of `max_skew_seconds`. That is accepted here
+    because the trigger is a whole-population reconcile — idempotent, and
+    coalesced by the scheduler's settle window — so a replay costs at most one
+    extra cycle, never a divergent write.
     """
     if not secret or not signature or not timestamp:
         return False
@@ -145,6 +151,11 @@ class WebhookServer:
         self._stopping.set()
         self._server.close()
         self._thread.join(timeout=timeout)
+        if self._thread.is_alive():
+            _logger.warning(
+                "webhook server thread did not stop within %.1fs; continuing shutdown",
+                timeout,
+            )
 
 
 def start(webhook_config: WebhookConfig, *, work_queue: "queue.Queue[object]") -> WebhookServer:

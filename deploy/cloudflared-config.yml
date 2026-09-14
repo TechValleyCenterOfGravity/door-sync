@@ -23,6 +23,9 @@ credentials-file: /etc/cloudflared/door-sync.json
 
 ingress:
   - hostname: door-sync.example.org
+    # Must match [webhook] port in config.toml (default 8787). Change one and
+    # the tunnel 502s every delivery with nothing in door-sync's logs, because
+    # the receiver never sees the request.
     service: http://127.0.0.1:8787
   # Everything else is refused.
   - service: http_status:404

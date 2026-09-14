@@ -2,6 +2,10 @@
 Description=cloudflared tunnel for the door-sync webhook receiver
 After=network-online.target
 Wants=network-online.target
+# Cap restart flapping. These live in [Unit], not [Service] -- systemd >= 229
+# ignores them under [Service].
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple

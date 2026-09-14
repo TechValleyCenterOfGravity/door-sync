@@ -367,7 +367,10 @@ The Mailgun API key is read from the ``MAILGUN_API_KEY`` env variable.
 Optional and **disabled by default**. When enabled, daemon mode runs a small
 sync Flask + waitress HTTP server in a second thread. It exists so a CiviCRM
 change can trigger a reconcile within seconds instead of waiting up to a full
-polling cadence. The server binds **loopback only** — a Cloudflare Tunnel
+polling cadence. The server binds **loopback only** — this is enforced by
+config validation, which rejects a non-loopback ``host`` and falls back to
+``127.0.0.1`` unless ``allow_non_loopback = true`` is set explicitly. A
+Cloudflare Tunnel
 (``cloudflared``) connects to it locally, so the Pi never exposes a public
 port. Inbound requests must carry a valid HMAC signature; the HTTP thread does
 nothing but verify the signature and enqueue a trigger, and the scheduler
@@ -378,11 +381,11 @@ reconcile, coalescing bursts.
 
    [webhook]
    enabled = true
-   host = "127.0.0.1"        # loopback only; cloudflared connects locally
+   host = "127.0.0.1"        # loopback enforced; cloudflared connects locally
    port = 8787
    max_body_bytes = 65536    # reject larger request bodies (fail-closed)
-   max_skew_seconds = 300    # reject signed requests outside this clock skew (replay guard)
-   debounce_seconds = 2.0    # settle window: a burst of webhooks collapses into one reconcile
+   max_skew_seconds = 300    # freshness window, minimum 30; bounds replay, does not prevent it
+   debounce_seconds = 2.0    # settle window, minimum 0.5: a burst collapses into one reconcile
 
 The shared secret is read from the ``WEBHOOK_HMAC_SECRET`` env variable and
 must match the ``ORIGIN_HMAC_SECRET`` configured on the ``door-webhook``

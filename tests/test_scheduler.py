@@ -7,6 +7,7 @@ covers signal handling, which restores the previous handlers).
 """
 
 import json
+import logging
 import os
 import queue
 import signal
@@ -201,16 +202,20 @@ def test_dry_run_propagates_to_reconcile_fn(tmp_path: Path) -> None:
 # --- webhook wake / coalesce additions ---
 
 
-def test_install_signal_handlers_enqueues_shutdown_sentinel() -> None:
+def test_signal_handler_does_not_touch_the_work_queue() -> None:
+    """The handler must stay async-signal-safe: it sets the Event and nothing
+    else. Enqueuing here would take queue.Queue's non-reentrant mutex, which the
+    main thread may already hold inside get() -- a self-deadlock that hangs
+    shutdown until SIGKILL. _get_until polls the Event instead."""
     event = threading.Event()
     q: queue.Queue[object] = queue.Queue()
     original_term = signal.getsignal(signal.SIGTERM)
     original_int = signal.getsignal(signal.SIGINT)
     try:
-        scheduler._install_signal_handlers(event, q)
+        scheduler._install_signal_handlers(event)
         os.kill(os.getpid(), signal.SIGTERM)
         assert event.is_set()
-        assert q.get_nowait() is scheduler._SHUTDOWN
+        assert q.empty()
     finally:
         signal.signal(signal.SIGTERM, original_term)
         signal.signal(signal.SIGINT, original_int)
@@ -221,7 +226,7 @@ def test_wait_for_trigger_returns_true_when_event_preset() -> None:
     event = threading.Event()
     event.set()
     result = scheduler._wait_for_trigger(q, event, cadence_seconds=600, debounce_seconds=0.0)
-    assert result is True
+    assert result.halted is True
 
 
 def test_wait_for_trigger_consumes_work_item_without_full_cadence() -> None:
@@ -229,7 +234,7 @@ def test_wait_for_trigger_consumes_work_item_without_full_cadence() -> None:
     q.put(ReconcileRequest(reason="membership-changed"))
     event = threading.Event()
     result = scheduler._wait_for_trigger(q, event, cadence_seconds=600, debounce_seconds=0.0)
-    assert result is False
+    assert result.halted is False
     assert q.empty()
 
 
@@ -238,7 +243,7 @@ def test_wait_for_trigger_shutdown_sentinel_returns_true() -> None:
     q.put(scheduler._SHUTDOWN)
     event = threading.Event()
     result = scheduler._wait_for_trigger(q, event, cadence_seconds=600, debounce_seconds=0.0)
-    assert result is True
+    assert result.halted is True
 
 
 def test_wait_for_trigger_coalesces_burst_into_one_wait() -> None:
@@ -247,7 +252,7 @@ def test_wait_for_trigger_coalesces_burst_into_one_wait() -> None:
         q.put(ReconcileRequest(reason="membership-changed"))
     event = threading.Event()
     result = scheduler._wait_for_trigger(q, event, cadence_seconds=600, debounce_seconds=0.05)
-    assert result is False
+    assert result.halted is False
     assert q.empty()  # all three drained within the settle window
 
 
@@ -255,7 +260,7 @@ def test_wait_for_trigger_returns_false_on_cadence_tick() -> None:
     q: queue.Queue[object] = queue.Queue()
     event = threading.Event()
     result = scheduler._wait_for_trigger(q, event, cadence_seconds=0.01, debounce_seconds=0.0)
-    assert result is False
+    assert result.halted is False
 
 
 def test_run_forever_wakes_on_enqueued_item(tmp_path: Path) -> None:
@@ -308,13 +313,13 @@ def test_wait_for_trigger_honours_caller_set_shutdown_event() -> None:
     timer.start()
     try:
         start = time.monotonic()
-        halted = scheduler._wait_for_trigger(
+        wake = scheduler._wait_for_trigger(
             work_queue, event, cadence_seconds=30.0, debounce_seconds=0.0
         )
         elapsed = time.monotonic() - start
     finally:
         timer.cancel()
-    assert halted is True
+    assert wake.halted is True
     assert elapsed < 2.0, f"blocked {elapsed:.1f}s; should wake on the event"
 
 
@@ -327,11 +332,50 @@ def test_wait_for_trigger_honours_shutdown_event_during_debounce() -> None:
     timer.start()
     try:
         start = time.monotonic()
-        halted = scheduler._wait_for_trigger(
+        wake = scheduler._wait_for_trigger(
             work_queue, event, cadence_seconds=30.0, debounce_seconds=30.0
         )
         elapsed = time.monotonic() - start
     finally:
         timer.cancel()
-    assert halted is True
+    assert wake.halted is True
     assert elapsed < 2.0, f"blocked {elapsed:.1f}s; should wake on the event"
+
+
+def test_cycle_start_log_names_the_trigger(tmp_path: Path, caplog) -> None:  # type: ignore[no-untyped-def]
+    """An operator reading the ops log could not tell a webhook-driven cycle
+    from a cadence tick; the ReconcileRequest fields were written and never
+    read. contact_id only -- never names (architecture.md §11)."""
+    cfg = _config(tmp_path, cadence_seconds=600)
+    q: queue.Queue[object] = queue.Queue()
+    q.put(ReconcileRequest(reason="membership-changed", contact_id=4242))
+    event = threading.Event()
+    calls = 0
+
+    def fake_reconcile(config: Config, *, dry_run: bool) -> ReconcileResult:  # noqa: ARG001
+        nonlocal calls
+        calls += 1
+        if calls >= 2:
+            event.set()
+        return _ok_result()
+
+    with caplog.at_level(logging.INFO, logger="door_sync.scheduler"):
+        scheduler.run_forever(cfg, shutdown_event=event, work_queue=q, reconcile_fn=fake_reconcile)
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert "cycle start (startup)" in text
+    assert "trigger=membership-changed" in text
+    assert "contact_id=4242" in text
+
+
+def test_wake_reports_coalesced_count() -> None:
+    q: queue.Queue[object] = queue.Queue()
+    q.put(ReconcileRequest(reason="membership-changed", contact_id=1))
+    for _ in range(3):
+        q.put(ReconcileRequest(reason="membership-changed", contact_id=2))
+    wake = scheduler._wait_for_trigger(
+        q, threading.Event(), cadence_seconds=600, debounce_seconds=0.05
+    )
+    assert wake.halted is False
+    assert wake.trigger is not None
+    assert wake.trigger.contact_id == 1  # the first of the burst
+    assert wake.coalesced == 3
