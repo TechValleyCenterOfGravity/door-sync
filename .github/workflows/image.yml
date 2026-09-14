@@ -1,0 +1,173 @@
+name: Appliance image
+
+# Builds the immutable A/B appliance image and its OTA bundle with
+# rpi-image-gen, and attaches both to a published release.
+#
+# rpi-image-gen needs an arm64 host with real mount/unshare privileges. Upstream
+# builds its own images on ubuntu-24.04-arm, so that is what this uses --
+# native, no container, no QEMU (which upstream does not formally support).
+#
+# This is slow (tens of minutes: it bootstraps a Debian rootfs and lays out a
+# multi-GB image), so it only runs on releases, on demand, and on pull requests
+# that actually touch the image definition.
+
+on:
+  release:
+    types: [published]
+  pull_request:
+    paths:
+      - 'deploy/rpi-image-gen/**'
+      - 'packaging/deb/**'
+      - '.github/workflows/image.yml'
+  workflow_dispatch:
+    inputs:
+      rpi_image_gen_ref:
+        description: rpi-image-gen commit to build with
+        required: false
+        default: d1021e82dd578b588cc3b4d45cd7b4b86e57b796
+
+permissions:
+  contents: read
+
+env:
+  # Pinned: rpi-image-gen is under active development, and the image that opens
+  # a door should not change because upstream moved.
+  RPI_IMAGE_GEN_REF: d1021e82dd578b588cc3b4d45cd7b4b86e57b796
+  IMAGE_NAME: door-sync-ab
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    permissions:
+      # Needed only by the release-upload step.
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Check out rpi-image-gen
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: raspberrypi/rpi-image-gen
+          ref: ${{ github.event.inputs.rpi_image_gen_ref || env.RPI_IMAGE_GEN_REF }}
+          path: .rpi-image-gen
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
+        with:
+          version: "0.12.13"
+
+      - name: Determine version
+        id: version
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "release" ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="$(python3 -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # The image records artefact.version as what an operator sees when
+      # choosing whether to deploy or roll back. A release whose tag disagrees
+      # with it would ship a bundle labelled with the wrong version, so fail
+      # loudly rather than quietly mislabel a door controller update.
+      - name: Check artefact version matches the release
+        if: github.event_name == 'release'
+        run: |
+          set -euo pipefail
+          declared=$(uv run --no-project --with pyyaml python -c "import yaml;print(yaml.safe_load(open('deploy/rpi-image-gen/config/door-sync-ab.yaml'))['artefact']['version'])")
+          want="${{ steps.version.outputs.version }}"
+          if [ "$declared" != "$want" ]; then
+            echo "::error::artefact.version is $declared but the release is $want."
+            echo "::error::Bump artefact.version in deploy/rpi-image-gen/config/door-sync-ab.yaml."
+            exit 1
+          fi
+
+      - name: Build the door-sync .deb
+        run: packaging/deb/build-deb.sh --version "${{ steps.version.outputs.version }}" --output dist
+
+      - name: Free up disk space
+        run: |
+          # A ~6 GB image plus a bootstrapped rootfs does not comfortably fit
+          # alongside the runner's preinstalled toolchains.
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "${AGENT_TOOLSDIRECTORY:-/nonexistent}" || true
+          df -h /
+
+      - name: Install rpi-image-gen dependencies
+        working-directory: .rpi-image-gen
+        run: |
+          sudo apt-get update
+          # zstd compresses the disk image below the release asset limit.
+          # install_deps.sh may pull it in already; do not rely on that.
+          sudo apt-get install -y --no-install-recommends zstd
+          # rpi-image-gen mounts pseudo-filesystems inside a private namespace
+          # under $HOME; without this the unshare cannot traverse into it.
+          sudo chmod o+x /home/runner
+          sudo ./install_deps.sh
+
+      - name: Build image and OTA bundle
+        working-directory: .rpi-image-gen
+        run: |
+          set -euo pipefail
+          # Reproducible: timestamps come from the commit being built, not from
+          # whenever CI happened to run.
+          export SOURCE_DATE_EPOCH="$(git -C "$GITHUB_WORKSPACE" log -1 --pretty=%ct)"
+          ./rpi-image-gen build \
+            -S "$GITHUB_WORKSPACE/deploy/rpi-image-gen/" \
+            -c door-sync-ab.yaml \
+            -- IGconf_doorsync_deb="$GITHUB_WORKSPACE/dist/door-sync_${{ steps.version.outputs.version }}_all.deb"
+
+      # Upstream does not document the deploy directory, and it is free to move
+      # it, so discover the artefacts rather than hardcoding a path.
+      - name: Collect artefacts
+        id: collect
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          found=$(find .rpi-image-gen -type f -name "${IMAGE_NAME}*" \
+                  \( -name '*.img' -o -name '*.update.tar.zst' -o -name '*.tar.*' \) -print)
+          if [ -z "$found" ]; then
+            echo "::error::no artefacts matching ${IMAGE_NAME}* were produced"
+            find .rpi-image-gen -maxdepth 4 -type d -name 'deploy*' -o -maxdepth 4 -type d -name 'work*' | head
+            exit 1
+          fi
+          echo "$found" | while read -r f; do
+            echo "  $(du -h "$f" | cut -f1)  $f"
+            cp "$f" out/
+          done
+          # Disk images are mostly empty; zstd takes a multi-GB image well under
+          # the 2 GiB per-asset limit on releases.
+          for img in out/*.img; do
+            [ -e "$img" ] || continue
+            zstd -19 -T0 --rm "$img"
+          done
+          ls -lh out/ | tail -n +2
+
+      - name: Upload as build artefact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ env.IMAGE_NAME }}-${{ steps.version.outputs.version }}
+          path: out/*
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Attach to release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          for f in out/*; do
+            size=$(stat -c%s "$f")
+            if [ "$size" -gt $((2 * 1024 * 1024 * 1024)) ]; then
+              echo "::warning::$f is $(du -h "$f" | cut -f1), over the 2 GiB release asset limit -- skipping"
+              continue
+            fi
+            gh release upload "${GITHUB_REF_NAME}" "$f" --clobber
+          done
