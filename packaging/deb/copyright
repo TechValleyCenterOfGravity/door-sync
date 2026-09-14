@@ -1,0 +1,14 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: door-sync
+Source: https://github.com/TechValleyCenterOfGravity/door-sync
+
+Files: *
+Copyright: Tech Valley Center of Gravity
+License: UNKNOWN
+ The upstream repository does not yet declare a licence: there is no LICENSE
+ file and pyproject.toml sets no project.license. Debian policy requires this
+ file to exist, so it exists and says so honestly rather than asserting terms
+ nobody has chosen.
+ .
+ Add a LICENSE file and a project.license field upstream, then replace this
+ paragraph with the real terms.

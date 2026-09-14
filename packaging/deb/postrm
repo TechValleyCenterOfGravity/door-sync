@@ -1,0 +1,20 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+  purge)
+    rm -rf /var/lib/door-sync
+    # /var/log/door-sync is deliberately left behind. audit.jsonl is the record
+    # of who had door access when; apt purge should not silently destroy it.
+    # Remove it by hand if that is genuinely what you want.
+    if getent passwd door-sync >/dev/null; then
+      deluser --system door-sync >/dev/null 2>&1 || true
+    fi
+    ;;
+esac
+
+if [ -d /run/systemd/system ]; then
+  systemctl daemon-reload >/dev/null 2>&1 || true
+fi
+
+exit 0
