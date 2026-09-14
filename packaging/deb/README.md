@@ -9,9 +9,10 @@ packaging/deb/build-deb.sh --version 0.2.0      # must match pyproject
 ```
 
 Requires `dpkg-deb`, `python3` and `uv`, so it runs on a Debian-ish host or in
-CI — not on macOS. `.github/workflows/release-deb.yml` builds it on every
-published release, attaches the `.deb` to the release, and also builds (without
-uploading) on pull requests that touch packaging.
+CI — not on macOS. `.github/workflows/release.yml` builds it on every published
+release, attaches the `.deb` to the release, and also builds (without uploading)
+on pull requests that touch packaging. The same workflow's image job then
+installs that exact package into the appliance image.
 
 ## Why a package rather than a venv
 
