@@ -50,6 +50,11 @@ ignore = [
 known-first-party = ["door_sync"]
 
 [tool.ruff.format]
+# ruff 0.16 formats Python code blocks inside Markdown by default. The files in
+# docs/ are hand-authored prose with illustrative snippets (including
+# column-aligned comments in architecture.md) and dated design specs that are a
+# historical record -- neither should be rewritten by the formatter.
+exclude = ["*.md"]
 quote-style = "double"
 indent-style = "space"
 line-ending = "lf"
