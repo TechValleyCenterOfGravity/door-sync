@@ -242,6 +242,15 @@ jobs:
             zstd -19 -T0 --rm "$img"
           done
 
+          required=("out/${IMAGE_NAME}.img.zst" "out/${IMAGE_NAME}.update.tar.zst")
+          for f in "${required[@]}"; do
+            if [ ! -f "$f" ]; then
+              echo "::error::missing required artefact: $f"
+              find .rpi-image-gen/work -maxdepth 2 -type d 2>/dev/null | head -30
+              exit 1
+            fi
+          done
+
           echo "== collected =="
           ls -lh out/
 
