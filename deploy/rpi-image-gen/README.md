@@ -56,7 +56,7 @@ supported upstream.
 ```sh
 packaging/deb/build-deb.sh --output dist      # or download a release asset
 rpi-image-gen build -S ./deploy/rpi-image-gen/ -c door-sync-ab.yaml -- \
-  IGconf_doorsync_deb=$PWD/dist/door-sync_0.1.0_all.deb
+  IGconf_doorsync_deb=$PWD/dist/door-sync_0.2.0_all.deb
 ```
 
 `-S` sets the source directory, so `config/` and `layer/` are found beneath it;
