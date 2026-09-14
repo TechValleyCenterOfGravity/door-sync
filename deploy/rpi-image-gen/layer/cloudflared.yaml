@@ -1,0 +1,72 @@
+# METABEGIN
+# X-Env-Layer-Name: cloudflared
+# X-Env-Layer-Category: general
+# X-Env-Layer-Desc: Cloudflare Tunnel daemon, from a pinned and checksummed
+#  release .deb. Installs the binary and a service account only -- it ships no
+#  unit and no tunnel config, because which tunnel runs and where it points
+#  belongs to the layer that consumes it.
+# X-Env-Layer-Version: 0.1.0
+# X-Env-Layer-Requires: ca-certificates
+# X-Env-VarPrefix: cloudflared
+# X-Env-Var-version: 2026.9.1
+# X-Env-Var-version-Desc: Pinned cloudflared release tag.
+# X-Env-Var-sha: 2a870d5bf6ea74d16c0923b804eabbf4943f1fd7c63a5c20fd41cc66b629c725
+# X-Env-Var-sha-Desc: SHA256 of cloudflared-linux-arm64.deb for that tag.
+# X-Env-Var-deb:
+# X-Env-Var-deb-Desc: Optional local path to that .deb, for offline builds.
+# X-Env-Var-uid: 901
+# X-Env-Var-uid-Desc: Fixed uid/gid for the cloudflared service account.
+# METAEND
+---
+mmdebstrap:
+  customize-hooks:
+    # UID is pinned, not allocated: /persistent outlives any single image, so a
+    # later build that allocated a different uid would leave tunnel credentials
+    # owned by the wrong user.
+    - |-
+      set -eu
+      chroot "$1" sh -c '
+        getent group cloudflared >/dev/null 2>&1 ||
+          addgroup --system --gid '"${IGconf_cloudflared_uid}"' cloudflared
+        getent passwd cloudflared >/dev/null 2>&1 ||
+          adduser --system --uid '"${IGconf_cloudflared_uid}"' --ingroup cloudflared \
+            --home /nonexistent --no-create-home --shell /usr/sbin/nologin cloudflared
+      '
+
+    # A pinned .deb with a checksum, not Cloudflare's apt repo. The repo floats,
+    # so two builds of the same config could differ; and a read-only root blocks
+    # on-device apt anyway, which would make an apt source in the image dead
+    # weight plus an extra trust anchor. dpkg records it, so it lands in the SBOM.
+    #
+    # Verified against 2026.9.1: no Depends (static Go binary, so plain dpkg -i
+    # resolves nothing) and no systemd unit shipped -- ./usr/bin/cloudflared is
+    # the only binary in the package.
+    - |-
+      set -eu
+      deb="${IGconf_cloudflared_deb:-}"
+      if [ -z "$deb" ]; then
+        deb="$(mktemp)"
+        curl -fsSL --retry 3 -o "$deb" \
+          "https://github.com/cloudflare/cloudflared/releases/download/${IGconf_cloudflared_version}/cloudflared-linux-arm64.deb"
+      fi
+      echo "${IGconf_cloudflared_sha}  ${deb}" | sha256sum -c -
+      install -m0644 "$deb" "$1/tmp/cloudflared.deb"
+      chroot "$1" dpkg -i /tmp/cloudflared.deb
+      rm -f "$1/tmp/cloudflared.deb"
+      chroot "$1" cloudflared --version
+
+    # /etc/cloudflared holds config.yml AND the tunnel credentials JSON, both
+    # provisioned per device. On a read-only root it must be a writable bind
+    # mount, and it must be slot-shared or an OTA flip loses the credentials and
+    # the tunnel silently stops connecting. Each layer declares its own shared
+    # paths, so this one belongs here rather than in the consuming layer.
+    - |-
+      set -eu
+      install -d -m0750 -o "${IGconf_cloudflared_uid}" -g "${IGconf_cloudflared_uid}" \
+        "$1/etc/cloudflared"
+      install -d -m0755 "$1/etc/rpi-image-gen/slot-shared.d"
+      cat > "$1/etc/rpi-image-gen/slot-shared.d/cloudflared.conf" <<'EOF'
+      Version=1
+      Path=/etc/cloudflared
+      EOF
+      chmod 0644 "$1/etc/rpi-image-gen/slot-shared.d/cloudflared.conf"

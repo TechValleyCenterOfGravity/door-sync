@@ -17,6 +17,14 @@ Environment=DOOR_SYNC_CONFIG_DIR=/etc/door-sync
 ExecStart=/usr/local/bin/door-sync run
 Restart=on-failure
 RestartSec=30s
+
+# /run is tmpfs, so /run/door-sync does not survive a reboot and nothing else
+# creates it. ReadWritePaths entries are NOT ignored when missing unless they
+# are prefixed with '-', so listing it there made namespace setup fail and the
+# unit refused to start at all. Let systemd own the directory instead: it is
+# created before the unit starts, owned by User=, and removed on stop.
+RuntimeDirectory=door-sync
+RuntimeDirectoryMode=0750
 StandardOutput=journal
 StandardError=journal
 
@@ -25,7 +33,7 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/var/log/door-sync /var/lib/door-sync /var/run/door-sync
+ReadWritePaths=/var/log/door-sync /var/lib/door-sync
 
 [Install]
 WantedBy=multi-user.target
