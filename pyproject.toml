@@ -17,7 +17,7 @@ dependencies = [
 door-sync = "door_sync.__main__:main"
 
 [build-system]
-requires = ["uv_build>=0.11.24,<0.12.0"]
+requires = ["uv_build>=0.12.13,<0.13.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
@@ -52,6 +52,11 @@ ignore = [
 known-first-party = ["door_sync"]
 
 [tool.ruff.format]
+# ruff 0.16 formats Python code blocks inside Markdown by default. The files in
+# docs/ are hand-authored prose with illustrative snippets (including
+# column-aligned comments in architecture.md) and dated design specs that are a
+# historical record -- neither should be rewritten by the formatter.
+exclude = ["*.md"]
 quote-style = "double"
 indent-style = "space"
 line-ending = "lf"
