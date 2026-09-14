@@ -73,7 +73,9 @@ jobs:
           echo "building door-sync $version"
 
       - name: Build .deb
-        run: packaging/deb/build-deb.sh --version "${{ steps.version.outputs.version }}" --output dist
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: packaging/deb/build-deb.sh --version "$VERSION" --output dist
 
       # The real test of the Depends line. Architecture is 'all', so this amd64
       # runner can verify a package destined for an arm64 Pi.
