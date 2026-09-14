@@ -13,22 +13,50 @@ sources; it has not been run. Lint it (`ig` metadata lint, per upstream's
 
 | File | Purpose |
 | --- | --- |
-| `layer/door-sync.yaml` | The application layer: account, venv, units, slot-shared state |
+| `layer/door-sync.yaml` | The application layer: account, the door-sync `.deb`, slot-shared state |
 | `layer/cloudflared.yaml` | Cloudflare Tunnel daemon: pinned binary and service account only |
 | `config/door-sync-ab.yaml` | Image config: includes `trixie-minbase-ab`, overrides sizes, hostname, version |
+
+## door-sync is installed as a package
+
+The layer installs the `.deb` from `packaging/deb/` rather than staging a
+virtualenv. That is what makes the SBOM honest: `image-rota` justifies the
+immutable root partly on "executing software matches the manifest exactly", and
+dpkg cannot see inside a venv, so neither can an SBOM built from the package
+database. Installing a package puts door-sync *and* flask, httpx and waitress in
+that database.
+
+It also deletes a lot of this layer. The package supplies the module,
+`/usr/bin/door-sync`, `door-sync.service`, the logrotate config and the examples
+under `/usr/share/door-sync/`, and its `postinst` creates `/etc/door-sync` and
+the state directories. The layer no longer builds a venv, rewrites `ExecStart`,
+or hand-places units and example config — and no longer needs a path to the
+repo's `deploy/` directory at all, only the `.deb`.
+
+The service account is still created by the layer, deliberately, and *before*
+the package: `postinst` creates it only when missing, so doing it first pins the
+uid and makes `postinst` a no-op there. `/persistent` outlives any single image,
+and a uid that shifted between builds would leave the audit log owned by the
+wrong user after a reflash.
+
+Runtime dependencies are declared in the layer's `packages:` so mmdebstrap
+installs them from the Debian mirror and `dpkg -i` needs no resolution. If that
+list ever drifts from the package's own `Depends`, `dpkg -i` fails at build time
+rather than shipping something broken.
 
 ## Build
 
 rpi-image-gen wants a **Debian Bookworm/Trixie arm64** host with `CAP_SYS_ADMIN`
-(bdebstrap, mmdebstrap, genimage, podman), plus `curl` for the cloudflared fetch. On an Apple Silicon Mac an arm64
+(bdebstrap, mmdebstrap, genimage, podman), plus `curl` for the cloudflared fetch.
+The same host can build the `.deb`; `packaging/deb/build-deb.sh` needs `dpkg-deb`,
+`python3` and `uv`. On an Apple Silicon Mac an arm64
 Debian VM runs natively; building on a Pi also works. QEMU is not formally
 supported upstream.
 
 ```sh
-uv build --out-dir dist                       # produces door_sync-*.whl
+packaging/deb/build-deb.sh --output dist      # or download a release asset
 rpi-image-gen build -S ./deploy/rpi-image-gen/ -c door-sync-ab.yaml -- \
-  IGconf_doorsync_wheel=$PWD/dist/door_sync-0.1.0-py3-none-any.whl \
-  IGconf_doorsync_deploy=$PWD/deploy
+  IGconf_doorsync_deb=$PWD/dist/door-sync_0.1.0_all.deb
 ```
 
 `-S` sets the source directory, so `config/` and `layer/` are found beneath it;
@@ -79,9 +107,9 @@ flashed card is loudly broken until provisioned. Worth putting in the runbook.
 any single image. If a later build allocated different system uids, the existing
 audit log and state would come back owned by the wrong user after a reflash.
 
-**The unit is reused as-is** apart from `ExecStart`, which is rewritten to the
-baked venv. The hardening, `ReadWritePaths`, and `After=time-sync.target` all
-carry over unchanged. The layer requires `fake-hwclock` and `systemd-timesyncd`
+**The unit comes from the package**, which points `ExecStart` at
+`/usr/bin/door-sync`. The hardening, `ReadWritePaths`, and
+`After=time-sync.target` all carry over unchanged from `deploy/`. The layer requires `fake-hwclock` and `systemd-timesyncd`
 for the same reason that ordering exists: the Pi has no RTC, and the webhook
 rejects signatures outside `max_skew_seconds`.
 
@@ -141,7 +169,7 @@ Installed from a **pinned `.deb` with a SHA256 check**, not Cloudflare's apt
 repo. The repo floats, so two builds of the same config could produce different
 images; and the read-only root blocks on-device `apt` anyway, which would make
 an apt source in the image dead weight plus an extra trust anchor. dpkg records
-the install, so unlike the pip venv this one does appear in the SBOM.
+the install, so like door-sync itself it appears in the SBOM.
 
 Pinned at **2026.9.1**. Verified against the real artifact rather than the
 release notes: checksum matches, the package declares **no `Depends`** (static
@@ -189,12 +217,6 @@ an artefact you may later want to rebuild or hand to someone else.
 
 ## Known gaps
 
-- **The venv is invisible to the SBOM.** `image-rota` sells "executing software
-  matches the manifest exactly", and a pip-installed venv undercuts that: the
-  Debian SBOM will not list httpx, flask, or waitress. The rigorous fix is to
-  build a `.deb` for door-sync and its deps; the pragmatic one is to accept the
-  gap and record the wheel's own lockfile alongside the image. Worth a decision
-  rather than a default.
 - **`alert.flag` lives in `/run`** and is therefore cleared by any reboot, an OTA
   included. That is pre-existing behaviour, not something this layer changes. If
   a raised alert should survive a reboot, move it under `/var/lib/door-sync`

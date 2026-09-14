@@ -1,32 +1,38 @@
 # METABEGIN
 # X-Env-Layer-Name: door-sync
 # X-Env-Layer-Category: general
-# X-Env-Layer-Desc: CiviCRM to UniFi Access reconciler, its cloudflared tunnel,
-#  and the slot-shared state both need to survive an A/B flip.
-# X-Env-Layer-Version: 0.1.0
+# X-Env-Layer-Desc: CiviCRM to UniFi Access reconciler, installed from its own
+#  Debian package, plus the slot-shared state it and the tunnel need to survive
+#  an A/B flip.
+# X-Env-Layer-Version: 0.2.0
 # X-Env-Layer-Requires: systemd-min,systemd-timesyncd,fake-hwclock,ca-certificates,
 #  cloudflared,rpi-connect-lite,rpi-connect-ota
 # X-Env-VarPrefix: doorsync
-# X-Env-Var-wheel:
-# X-Env-Var-wheel-Description: Host path to the door_sync-*.whl to bake in (uv build).
-# X-Env-Var-deploy:
-# X-Env-Var-deploy-Description: Host path to door-sync's deploy/ directory (units, logrotate).
+# X-Env-Var-deb:
+# X-Env-Var-deb-Description: Host path to the door-sync .deb (packaging/deb/build-deb.sh, or a release asset).
 # X-Env-Var-uid: 900
 # X-Env-Var-uid-Description: Fixed uid/gid for the door-sync service account.
 # METAEND
 ---
 mmdebstrap:
   packages:
+    # The package's runtime dependencies, installed from the Debian mirror so
+    # the dpkg -i below needs no resolution. Should these ever drift from the
+    # .deb's own Depends, that dpkg -i fails at build time rather than shipping
+    # a package that cannot satisfy its own imports.
+    - adduser
     - python3
-    - python3-venv
+    - python3-flask
+    - python3-httpx
+    - python3-waitress
     - logrotate
 
   customize-hooks:
-    # --- service accounts -------------------------------------------------
-    # UID is PINNED, not allocated. /persistent outlives any single image, so
-    # if a later build allocated a different uid the existing audit log and
-    # state would come back owned by the wrong user after a reflash.
-    # The cloudflared account belongs to the cloudflared layer.
+    # --- service account ----------------------------------------------------
+    # Created BEFORE the package, because its postinst creates the account only
+    # when missing -- so this pins the uid and postinst becomes a no-op.
+    # /persistent outlives any single image, and a uid that shifted between
+    # builds would leave the audit log owned by the wrong user after a reflash.
     - |-
       set -eu
       chroot "$1" sh -c '
@@ -37,42 +43,27 @@ mmdebstrap:
             --home /nonexistent --no-create-home --shell /usr/sbin/nologin door-sync
       '
 
-    # --- the application ---------------------------------------------------
-    # Baked into the immutable root as a venv. The root is read-only at runtime,
-    # so there is no on-device pip; an upgrade ships a new slot.
+    # --- the application ----------------------------------------------------
+    # The package supplies the module, /usr/bin/door-sync, door-sync.service,
+    # the logrotate config, and the examples under /usr/share/door-sync. Its
+    # postinst also creates /etc/door-sync and the state directories.
+    #
+    # Installing a package rather than staging a venv is the point: dpkg records
+    # every runtime component, so the SBOM image-rota advertises is actually
+    # complete. A venv would be invisible to it.
     - |-
       set -eu
-      install -d -m0755 "$1/opt/door-sync"
-      install -m0644 "${IGconf_doorsync_wheel}" "$1/tmp/door_sync.whl"
-      chroot "$1" python3 -m venv /opt/door-sync/venv
-      chroot "$1" /opt/door-sync/venv/bin/pip install --no-cache-dir --no-compile /tmp/door_sync.whl
-      rm -f "$1/tmp/door_sync.whl"
-      chroot "$1" /opt/door-sync/venv/bin/door-sync --help >/dev/null
+      install -m0644 "${IGconf_doorsync_deb}" "$1/tmp/door-sync.deb"
+      chroot "$1" dpkg -i /tmp/door-sync.deb
+      rm -f "$1/tmp/door-sync.deb"
+      chroot "$1" door-sync --help >/dev/null
 
-    # --- config directory (contents provisioned on device, not baked) ------
-    # Declared slot-shared below, so this empty dir is replaced at boot by a
-    # writable bind mount from /persistent. Secrets never enter the image; the
-    # example config ships read-only for reference.
-    - |-
-      set -eu
-      install -d -m0755 "$1/etc/door-sync"
-      install -d -m0755 "$1/usr/share/door-sync"
-      install -m0644 "${IGconf_doorsync_deploy}/../config.example.toml" \
-        "$1/usr/share/door-sync/config.example.toml"
-      install -m0644 "${IGconf_doorsync_deploy}/../.env.example" \
-        "$1/usr/share/door-sync/env.example"
-
-    # --- writable state ----------------------------------------------------
-    - |-
-      set -eu
-      install -d -m0750 -o "${IGconf_doorsync_uid}" -g "${IGconf_doorsync_uid}" \
-        "$1/var/lib/door-sync" "$1/var/log/door-sync"
-
-    # --- slot-shared state -------------------------------------------------
+    # --- slot-shared state --------------------------------------------------
     # /var is per-slot. Without this the append-only audit log -- the record of
     # who had door access when -- silently restarts on every OTA, and the
     # last-success timestamp resets. /etc/door-sync is shared so the operator's
     # config and secrets survive a slot flip and stay writable on a ro root.
+    # (/etc/cloudflared is declared by the cloudflared layer.)
     - |-
       set -eu
       install -d -m0755 "$1/etc/rpi-image-gen/slot-shared.d"
@@ -84,21 +75,13 @@ mmdebstrap:
       EOF
       chmod 0644 "$1/etc/rpi-image-gen/slot-shared.d/door-sync.conf"
 
-    # --- systemd units + logrotate ----------------------------------------
-    # ExecStart is rewritten to the baked venv; everything else in the unit
-    # (hardening, ReadWritePaths, After=time-sync.target) is used as-is.
+    # --- the tunnel unit ----------------------------------------------------
+    # Shipped by the package as an example rather than installed, because which
+    # tunnel runs is a deployment decision. The image makes that decision.
     - |-
       set -eu
-      install -m0644 "${IGconf_doorsync_deploy}/door-sync.service" \
-        "$1/usr/lib/systemd/system/door-sync.service"
-      sed -i 's#^ExecStart=.*#ExecStart=/opt/door-sync/venv/bin/door-sync run#' \
-        "$1/usr/lib/systemd/system/door-sync.service"
-      install -m0644 "${IGconf_doorsync_deploy}/cloudflared.service" \
+      install -m0644 "$1/usr/share/door-sync/examples/cloudflared.service" \
         "$1/usr/lib/systemd/system/cloudflared.service"
-      install -m0644 "${IGconf_doorsync_deploy}/door-sync.logrotate" \
-        "$1/etc/logrotate.d/door-sync"
-      install -m0644 "${IGconf_doorsync_deploy}/cloudflared-config.yml" \
-        "$1/usr/share/door-sync/cloudflared-config.example.yml"
 
     - $BDEBSTRAP_HOOKS/enable-units "$1" door-sync
     - $BDEBSTRAP_HOOKS/enable-units "$1" cloudflared
