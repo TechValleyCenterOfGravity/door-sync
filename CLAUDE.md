@@ -2,7 +2,7 @@
 
 CiviCRM → UniFi Access reconciliation daemon. Runs on a Raspberry Pi under systemd.
 
-**Status: in active development.** Pure modules, CiviCRM client, UniFi Access client, orchestrator + ops (audit JSONL, state JSON, alert with flag-file + SMTP/Mailgun transports), and the scheduler daemon loop (SIGTERM/SIGINT handling) are merged. Architecture is locked; see `docs/architecture.md` before adding code.
+**Status: in active development.** Pure modules, CiviCRM client, UniFi Access client, orchestrator + ops (audit JSONL, state JSON, alert with flag-file + SMTP/Mailgun transports), the scheduler daemon loop (SIGTERM/SIGINT handling), and the optional webhook receiver (HMAC-verified, loopback-bound, queue-driven) are merged. Architecture is locked; see `docs/architecture.md` before adding code.
 
 ## Commands
 
@@ -30,7 +30,7 @@ All tooling goes through `uv run` — the venv is managed by uv, not pip.
 - **Don't mix `import X` and `from X import Y` for the same module.** CodeQL flags it post-PR; local `ruff`/`pyrefly` don't. Pick one style per file.
 - **Pure modules stay pure.** `reconciler.py`, `safety.py`, `tier_mapping.py` take dataclasses, return dataclasses. No logging, no config lookups, no HTTP, no exceptions on data issues — return a sentinel instead (architecture.md §5).
 - **Frozen dataclasses.** All domain models in `models.py` are `@dataclass(frozen=True)`. Never mutate; construct a new instance.
-- **Strict layering.** Nothing imports `orchestrator` except `scheduler` and (future) `webhook`. See dependency table in architecture.md §4.
+- **Strict layering.** Nothing imports `orchestrator` except `scheduler`. `webhook` is top-of-graph but does not import it — it enqueues work the scheduler runs, and the future day-pass handlers will call `unifi.client` directly. See dependency table in architecture.md §4.
 - **Card ID redaction.** Logs show last-4 only. Never log a full card ID at any level (architecture.md §11).
 - **No member names in logs/alerts.** Operational and audit log streams identify members by `contact_id` (and, for unmanaged UniFi accounts, user id) — never by name. CodeQL's `py/clear-text-logging-sensitive-data` flags `display_name` as PII. The interactive `show-diff` CLI may print names (direct operator output, not a log). See architecture/conventions.rst.
 - **Dry-run is sacred.** Dry-run flips a flag inside `UnifiClient` that turns writes into no-ops. Pure modules behave identically in dry-run and live — do not branch on dry-run in pure code.
