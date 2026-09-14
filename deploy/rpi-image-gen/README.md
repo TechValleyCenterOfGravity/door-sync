@@ -225,12 +225,16 @@ an artefact you may later want to rebuild or hand to someone else.
 
 ## Building it in CI
 
-`.github/workflows/image.yml` builds the image and OTA bundle on
+`.github/workflows/release.yml` builds the image and OTA bundle on
 `ubuntu-24.04-arm`, which is what upstream uses for its own images — native
 arm64, no container, no QEMU (which upstream does not formally support). It runs
 on published releases, on demand, and on pull requests that touch the image
 definition, because a build that takes tens of minutes does not belong on every
 push.
+
+The image job takes the `.deb` from the package job in the same workflow rather
+than rebuilding it, so a release ships the byte-identical artefact that was
+verified against Debian trixie.
 
 rpi-image-gen is pinned to a commit. It is under active development, and the
 image that opens a door should not change because upstream moved. Override it
