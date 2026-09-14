@@ -11,6 +11,7 @@ import os
 import queue
 import signal
 import threading
+import time
 from pathlib import Path
 
 from door_sync import scheduler
@@ -294,3 +295,43 @@ def test_run_forever_breaks_on_shutdown_sentinel(tmp_path: Path) -> None:
     rc = scheduler.run_forever(cfg, shutdown_event=event, work_queue=q, reconcile_fn=fake_reconcile)
     assert rc == 0
     assert call_count == 1
+
+
+def test_wait_for_trigger_honours_caller_set_shutdown_event() -> None:
+    """Regression: the queue-driven wait replaced Event.wait(timeout=...), which
+    returned as soon as the event was set. A caller that passes its own
+    shutdown_event (the documented public path) and never enqueues the sentinel
+    would otherwise block for the full cadence -- 600s by default."""
+    work_queue: queue.Queue[object] = queue.Queue()
+    event = threading.Event()
+    timer = threading.Timer(0.1, event.set)
+    timer.start()
+    try:
+        start = time.monotonic()
+        halted = scheduler._wait_for_trigger(
+            work_queue, event, cadence_seconds=30.0, debounce_seconds=0.0
+        )
+        elapsed = time.monotonic() - start
+    finally:
+        timer.cancel()
+    assert halted is True
+    assert elapsed < 2.0, f"blocked {elapsed:.1f}s; should wake on the event"
+
+
+def test_wait_for_trigger_honours_shutdown_event_during_debounce() -> None:
+    """Same guarantee inside the burst-coalescing settle window."""
+    work_queue: queue.Queue[object] = queue.Queue()
+    work_queue.put(ReconcileRequest(reason="membership-changed", contact_id=1))
+    event = threading.Event()
+    timer = threading.Timer(0.1, event.set)
+    timer.start()
+    try:
+        start = time.monotonic()
+        halted = scheduler._wait_for_trigger(
+            work_queue, event, cadence_seconds=30.0, debounce_seconds=30.0
+        )
+        elapsed = time.monotonic() - start
+    finally:
+        timer.cancel()
+    assert halted is True
+    assert elapsed < 2.0, f"blocked {elapsed:.1f}s; should wake on the event"

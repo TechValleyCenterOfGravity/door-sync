@@ -27,6 +27,10 @@ _logger = logging.getLogger("door_sync.scheduler")
 # Enqueued by the signal handler so a blocked queue.get() wakes immediately.
 _SHUTDOWN = object()
 
+# queue.Queue cannot wait on a queue item and an Event at once, so the wait is
+# sliced this finely to stay responsive to a caller-set shutdown_event.
+_SHUTDOWN_POLL_SECONDS = 0.5
+
 
 class ReconcileFn(Protocol):
     """Callable protocol for a single reconcile cycle."""
@@ -55,6 +59,32 @@ def _install_signal_handlers(
     signal.signal(signal.SIGINT, _handler)
 
 
+def _get_until(
+    work_queue: "queue.Queue[object]",
+    shutdown_event: threading.Event,
+    *,
+    timeout: float,
+) -> object:
+    """``work_queue.get(timeout=...)``, but also wake promptly on `shutdown_event`.
+
+    Returns the queue item, or `_SHUTDOWN` if the event is set while waiting.
+    Raises `queue.Empty` if `timeout` elapses first. The signal handler enqueues
+    the sentinel, but a caller that only sets the event must stop just as
+    promptly -- `Event.wait` used to guarantee that.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        if shutdown_event.is_set():
+            return _SHUTDOWN
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise queue.Empty
+        try:
+            return work_queue.get(timeout=min(remaining, _SHUTDOWN_POLL_SECONDS))
+        except queue.Empty:
+            continue
+
+
 def _wait_for_trigger(
     work_queue: "queue.Queue[object]",
     shutdown_event: threading.Event,
@@ -73,7 +103,7 @@ def _wait_for_trigger(
     if shutdown_event.is_set():
         return True
     try:
-        item = work_queue.get(timeout=cadence_seconds)
+        item = _get_until(work_queue, shutdown_event, timeout=cadence_seconds)
     except queue.Empty:
         return shutdown_event.is_set()  # periodic cadence tick
     if item is _SHUTDOWN or shutdown_event.is_set():
@@ -83,7 +113,7 @@ def _wait_for_trigger(
     deadline = time.monotonic() + debounce_seconds
     while (remaining := deadline - time.monotonic()) > 0:
         try:
-            nxt = work_queue.get(timeout=remaining)
+            nxt = _get_until(work_queue, shutdown_event, timeout=remaining)
         except queue.Empty:
             break
         if nxt is _SHUTDOWN or shutdown_event.is_set():

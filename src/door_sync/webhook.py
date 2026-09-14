@@ -62,7 +62,14 @@ def _verify_signature(
     provided = signature[len(_SIG_PREFIX) :] if signature.startswith(_SIG_PREFIX) else signature
     signed = f"{ts}.".encode("ascii") + raw_body
     expected = hmac.new(secret.encode("utf-8"), signed, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, provided)
+    # compare_digest raises TypeError on non-ASCII str, and Werkzeug latin-1
+    # decodes header bytes -- so compare as bytes and fail closed on anything
+    # that is not ASCII. A malformed header must be a 401, never a 500.
+    try:
+        provided_bytes = provided.encode("ascii")
+    except UnicodeEncodeError:
+        return False
+    return hmac.compare_digest(expected.encode("ascii"), provided_bytes)
 
 
 def _extract_contact_id(raw_body: bytes) -> int | None:
@@ -73,14 +80,17 @@ def _extract_contact_id(raw_body: bytes) -> int | None:
     """
     try:
         payload = json.loads(raw_body)
-    except (ValueError, TypeError):
+        if isinstance(payload, dict):
+            cid = payload.get("contact_id")
+            if isinstance(cid, int) and not isinstance(cid, bool):
+                return cid
+            # isdecimal(), not isdigit(): isdigit() is True for superscripts and
+            # other forms int() rejects, which would raise straight past this
+            # helper and drop the trigger.
+            if isinstance(cid, str) and cid.isdecimal():
+                return int(cid)
+    except Exception:  # noqa: BLE001 - best-effort parse; see docstring
         return None
-    if isinstance(payload, dict):
-        cid = payload.get("contact_id")
-        if isinstance(cid, int) and not isinstance(cid, bool):
-            return cid
-        if isinstance(cid, str) and cid.isdigit():
-            return int(cid)
     return None
 
 
@@ -143,7 +153,15 @@ def start(webhook_config: WebhookConfig, *, work_queue: "queue.Queue[object]") -
     """
     wcfg = webhook_config
     app = create_app(wcfg, work_queue)
-    server = create_server(app, host=wcfg.host, port=wcfg.port)
+    # Cap the body at the waitress layer too. Flask's MAX_CONTENT_LENGTH only
+    # applies after waitress has already read the whole request, and waitress
+    # defaults to 1 GB (spooling past 512 KB to a tempfile).
+    server = create_server(
+        app,
+        host=wcfg.host,
+        port=wcfg.port,
+        max_request_body_size=wcfg.max_body_bytes,
+    )
     stopping = threading.Event()
 
     def _serve() -> None:

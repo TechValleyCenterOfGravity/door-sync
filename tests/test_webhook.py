@@ -224,3 +224,74 @@ def test_no_pii_in_logs(caplog) -> None:  # type: ignore[no-untyped-def]
     assert "Jane Secret" not in text
     assert "jane@example.com" not in text
     assert "7" in text  # contact_id IS logged
+
+
+# --- regression tests for review findings ---
+
+
+def test_verify_signature_non_ascii_header_fails_closed() -> None:
+    """hmac.compare_digest raises TypeError on non-ASCII str, and Werkzeug
+    latin-1 decodes header bytes -- so a malformed signature used to surface as
+    an unauthenticated 500 with a traceback instead of a 401."""
+    body = b"{}"
+    ts = int(time.time())
+    for bad in ("café", "sha256=café", "ÿ" * 64):
+        assert (
+            webhook._verify_signature(
+                SECRET, body, timestamp=str(ts), signature=bad, max_skew_seconds=300, now=ts
+            )
+            is False
+        ), bad
+
+
+def test_membership_changed_non_ascii_signature_401() -> None:
+    client, q = _client()
+    body = b"{}"
+    headers = _sign(body)
+    headers["X-Door-Sync-Signature"] = "sha256=café"
+    resp = client.post("/civicrm/membership-changed", data=body, headers=headers)  # type: ignore[attr-defined]
+    assert resp.status_code == 401
+    assert q.empty()
+
+
+def test_non_decimal_contact_id_still_enqueues() -> None:
+    """str.isdigit() is True for superscripts and circled digits, which int()
+    rejects. That ValueError escaped the helper, 500ing a correctly signed
+    request and silently dropping the reconcile trigger."""
+    for weird in ("²", "②", "12²"):
+        client, q = _client()
+        body = f'{{"contact_id": "{weird}"}}'.encode()
+        resp = client.post("/civicrm/membership-changed", data=body, headers=_sign(body))  # type: ignore[attr-defined]
+        assert resp.status_code == 202, weird
+        item = q.get_nowait()
+        assert isinstance(item, ReconcileRequest)
+        assert item.contact_id is None
+
+
+def test_extract_contact_id_survives_deep_nesting() -> None:
+    """json.loads raises RecursionError, not ValueError, on deeply nested input;
+    the docstring promises None on any parse issue."""
+    assert webhook._extract_contact_id(b"[" * 20_000 + b"]" * 20_000) is None
+
+
+def test_body_cap_is_passed_to_waitress(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Flask's MAX_CONTENT_LENGTH only applies after waitress has read the whole
+    body; waitress defaults to 1 GB, so the cap must reach it too."""
+    captured: dict[str, object] = {}
+
+    class _FakeServer:
+        def run(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    def _fake_create_server(app: object, **kwargs: object) -> _FakeServer:
+        captured.update(kwargs)
+        return _FakeServer()
+
+    monkeypatch.setattr(webhook, "create_server", _fake_create_server)
+    wcfg = _wcfg(max_body_bytes=4096)
+    server = webhook.start(wcfg, work_queue=queue.Queue())
+    server.stop(timeout=0.5)
+    assert captured["max_request_body_size"] == 4096
