@@ -3,14 +3,17 @@ from pathlib import Path
 
 import pytest
 
+from door_sync import config
 from door_sync.config import (
     _DEFAULT_ALERT_CONFIG,
     _DEFAULT_OPS_PATHS,
+    _DEFAULT_WEBHOOK_CONFIG,
     CivicrmConfig,
     Config,
     ConfigError,
     ConfigIssue,
     UnifiConfig,
+    WebhookConfig,
     _load_env_file,
     load,
 )
@@ -708,6 +711,9 @@ def test_example_files_parse(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.alert.transport == "flag-file"
     assert result.alert.smtp is None
     assert result.alert.mailgun is None
+    # webhook — commented out in example, defaults to disabled (no secret needed)
+    assert result.webhook == _DEFAULT_WEBHOOK_CONFIG
+    assert result.webhook.enabled is False
 
 
 # --- facility_code tests ---
@@ -1166,3 +1172,131 @@ def test_active_statuses_with_empty_entry_rejected(
     assert any(
         i.path == "civicrm.active_statuses" and "non-empty" in i.message for i in exc.value.issues
     )
+
+
+# --- webhook config tests ---
+
+
+def test_webhook_absent_defaults_disabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("WEBHOOK_HMAC_SECRET", raising=False)
+    cfg, env = _write_minimal_valid(tmp_path)
+    result = load(config_path=cfg, env_path=env)
+    assert result.webhook == _DEFAULT_WEBHOOK_CONFIG
+    assert result.webhook.enabled is False
+
+
+def test_webhook_enabled_requires_secret(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("WEBHOOK_HMAC_SECRET", raising=False)
+    cfg, env = _write_minimal_valid(tmp_path, extra_toml="[webhook]\nenabled = true\n")
+    with pytest.raises(ConfigError) as exc:
+        load(config_path=cfg, env_path=env)
+    assert any(i.path == "WEBHOOK_HMAC_SECRET" for i in exc.value.issues)
+
+
+def test_webhook_enabled_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(tmp_path, extra_toml="[webhook]\nenabled = true\nport = 9000\n")
+    env.write_text(env.read_text() + "WEBHOOK_HMAC_SECRET=" + "s" * 32 + "\n")
+    result = load(config_path=cfg, env_path=env)
+    assert result.webhook.enabled is True
+    assert result.webhook.host == "127.0.0.1"
+    assert result.webhook.port == 9000
+    assert result.webhook.hmac_secret == "s" * 32
+    assert result.webhook.max_skew_seconds == 300
+
+
+def test_webhook_port_out_of_range(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(
+        tmp_path, extra_toml="[webhook]\nenabled = true\nport = 70000\n"
+    )
+    env.write_text(env.read_text() + "WEBHOOK_HMAC_SECRET=" + "s" * 32 + "\n")
+    with pytest.raises(ConfigError) as exc:
+        load(config_path=cfg, env_path=env)
+    assert any(i.path == "webhook.port" for i in exc.value.issues)
+
+
+def test_webhook_bad_skew(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    cfg, env = _write_minimal_valid(
+        tmp_path, extra_toml="[webhook]\nenabled = true\nmax_skew_seconds = -5\n"
+    )
+    env.write_text(env.read_text() + "WEBHOOK_HMAC_SECRET=" + "s" * 32 + "\n")
+    with pytest.raises(ConfigError) as exc:
+        load(config_path=cfg, env_path=env)
+    assert any(i.path == "webhook.max_skew_seconds" for i in exc.value.issues)
+
+
+def test_webhook_secret_too_short(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DOOR_SYNC_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("WEBHOOK_HMAC_SECRET", raising=False)
+    cfg, env = _write_minimal_valid(tmp_path, extra_toml="[webhook]\nenabled = true\n")
+    env.write_text(env.read_text() + "WEBHOOK_HMAC_SECRET=short\n")
+    with pytest.raises(ConfigError) as exc:
+        load(config_path=cfg, env_path=env)
+    assert any(i.path == "WEBHOOK_HMAC_SECRET" for i in exc.value.issues)
+
+
+def test_webhook_config_is_frozen() -> None:
+    w = WebhookConfig(
+        enabled=False,
+        host="127.0.0.1",
+        port=8787,
+        hmac_secret="",
+        max_body_bytes=65536,
+        max_skew_seconds=300,
+        debounce_seconds=2.0,
+    )
+    with pytest.raises(FrozenInstanceError):
+        w.enabled = True  # type: ignore[misc]
+
+
+# --- webhook host / floor enforcement ---
+
+
+def test_webhook_non_loopback_host_rejected_and_falls_back() -> None:
+    for bad in ("0.0.0.0", "::", "192.168.1.50", "door.example.org"):
+        issues: list[ConfigIssue] = []
+        cfg = config._validate_webhook(
+            {"webhook": {"enabled": True, "host": bad}}, issues, lambda _n: "x" * 16
+        )
+        assert any(i.path == "webhook.host" for i in issues), bad
+        assert cfg.host == "127.0.0.1", bad  # fail secure
+
+
+def test_webhook_loopback_hosts_accepted() -> None:
+    for good in ("127.0.0.1", "127.0.0.2", "::1", "localhost"):
+        issues: list[ConfigIssue] = []
+        cfg = config._validate_webhook(
+            {"webhook": {"enabled": True, "host": good}}, issues, lambda _n: "x" * 16
+        )
+        assert not [i for i in issues if i.path == "webhook.host"], good
+        assert cfg.host == good, good
+
+
+def test_webhook_non_loopback_allowed_with_explicit_opt_in() -> None:
+    issues: list[ConfigIssue] = []
+    cfg = config._validate_webhook(
+        {"webhook": {"enabled": True, "host": "0.0.0.0", "allow_non_loopback": True}},
+        issues,
+        lambda _n: "x" * 16,
+    )
+    assert not [i for i in issues if i.path == "webhook.host"]
+    assert cfg.host == "0.0.0.0"
+
+
+def test_webhook_degenerate_skew_and_debounce_rejected() -> None:
+    """0 used to validate cleanly: max_skew_seconds=0 rejects nearly every
+    request, debounce_seconds=0 disables burst coalescing entirely."""
+    issues: list[ConfigIssue] = []
+    cfg = config._validate_webhook(
+        {"webhook": {"enabled": True, "max_skew_seconds": 0, "debounce_seconds": 0.0}},
+        issues,
+        lambda _n: "x" * 16,
+    )
+    assert any(i.path == "webhook.max_skew_seconds" for i in issues)
+    assert any(i.path == "webhook.debounce_seconds" for i in issues)
+    assert cfg.max_skew_seconds == 300
+    assert cfg.debounce_seconds == 2.0

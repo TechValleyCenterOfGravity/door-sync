@@ -1,0 +1,31 @@
+# Cloudflare Tunnel config for the Pi. Routes ONE public hostname to the
+# loopback-only door-sync webhook receiver (config.toml [webhook]).
+#
+# cloudflared runs as its OWN systemd service (see cloudflared.service) —
+# separate from door-sync, so restarting the tunnel never disturbs the
+# reconcile loop, and the door-sync unit keeps exposing no public port.
+#
+# One-time setup (run interactively as the cloudflared user):
+#   cloudflared tunnel login
+#   cloudflared tunnel create door-sync
+#   cloudflared tunnel route dns door-sync door-sync.example.org
+# The `create` step writes a credentials JSON and prints the tunnel UUID.
+# Put the UUID in `tunnel:` below and the JSON at `credentials-file:`.
+#
+# Lock the hostname down in the Cloudflare dashboard with a Zero Trust
+# Access application using a SERVICE TOKEN policy, so only the door-webhook
+# Worker (presenting CF-Access-Client-Id / CF-Access-Client-Secret) can reach
+# it. The webhook's HMAC check (WEBHOOK_HMAC_SECRET) is the second, independent
+# lock.
+
+tunnel: <TUNNEL-UUID>
+credentials-file: /etc/cloudflared/door-sync.json
+
+ingress:
+  - hostname: door-sync.example.org
+    # Must match [webhook] port in config.toml (default 8787). Change one and
+    # the tunnel 502s every delivery with nothing in door-sync's logs, because
+    # the receiver never sees the request.
+    service: http://127.0.0.1:8787
+  # Everything else is refused.
+  - service: http_status:404

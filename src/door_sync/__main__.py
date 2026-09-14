@@ -16,16 +16,17 @@ Exit codes:
 
 import argparse
 import logging
+import queue
 import sys
 from pathlib import Path
 
-from door_sync import cli, orchestrator, reconciler, scheduler, tier_mapping
+from door_sync import cli, orchestrator, reconciler, scheduler, tier_mapping, webhook
 from door_sync import config as config_mod
 from door_sync.civicrm.client import CivicrmClient
 from door_sync.unifi.client import UnifiClient
 
 # Expose config_mod so tests can monkeypatch it via main_mod.config_mod.
-__all__ = ["config_mod", "CivicrmClient", "UnifiClient", "scheduler", "main"]
+__all__ = ["config_mod", "CivicrmClient", "UnifiClient", "scheduler", "webhook", "main"]
 
 _logger = logging.getLogger("door_sync")
 
@@ -123,7 +124,15 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 1
 
     if not args.once:
-        return scheduler.run_forever(config, dry_run=args.dry_run)
+        work_queue: queue.Queue[object] = queue.Queue()
+        server = (
+            webhook.start(config.webhook, work_queue=work_queue) if config.webhook.enabled else None
+        )
+        try:
+            return scheduler.run_forever(config, dry_run=args.dry_run, work_queue=work_queue)
+        finally:
+            if server is not None:
+                server.stop()
 
     try:
         result = orchestrator.reconcile(config, dry_run=args.dry_run)

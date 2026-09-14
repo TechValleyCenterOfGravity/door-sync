@@ -2,6 +2,11 @@
 Description=door-sync: CiviCRM to UniFi Access reconciler
 After=network-online.target
 Wants=network-online.target
+# The Pi has no RTC, so after a power cut the clock is restored from the last
+# shutdown. The webhook rejects signatures outside max_skew_seconds, so start
+# after the clock is synced or every delivery 401s until timesyncd catches up.
+After=time-sync.target
+Wants=time-sync.target
 
 [Service]
 Type=simple

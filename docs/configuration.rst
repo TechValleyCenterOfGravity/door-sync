@@ -72,6 +72,8 @@ These are required only when the corresponding alert transport is enabled:
      - ``alert.transport = "smtp"``
    * - ``MAILGUN_API_KEY``
      - ``alert.transport = "mailgun"``
+   * - ``WEBHOOK_HMAC_SECRET``
+     - ``webhook.enabled = true``
 
 Example env file:
 
@@ -357,6 +359,43 @@ The Mailgun API key is read from the ``MAILGUN_API_KEY`` env variable.
    Email delivery failures are logged at ERROR but never crash a
    reconciliation cycle. The flag file is the reliable alert mechanism;
    email is a convenience layer.
+
+
+``[webhook]`` — Embedded Webhook Receiver
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Optional and **disabled by default**. When enabled, daemon mode runs a small
+sync Flask + waitress HTTP server in a second thread. It exists so a CiviCRM
+change can trigger a reconcile within seconds instead of waiting up to a full
+polling cadence. The server binds **loopback only** — this is enforced by
+config validation, which rejects a non-loopback ``host`` and falls back to
+``127.0.0.1`` unless ``allow_non_loopback = true`` is set explicitly. A
+Cloudflare Tunnel
+(``cloudflared``) connects to it locally, so the Pi never exposes a public
+port. Inbound requests must carry a valid HMAC signature; the HTTP thread does
+nothing but verify the signature and enqueue a trigger, and the scheduler
+thread (the sole writer to UniFi/state/audit) drains it and runs a full
+reconcile, coalescing bursts.
+
+.. code-block:: toml
+
+   [webhook]
+   enabled = true
+   host = "127.0.0.1"        # loopback enforced; cloudflared connects locally
+   port = 8787
+   max_body_bytes = 65536    # reject larger request bodies (fail-closed)
+   max_skew_seconds = 300    # freshness window, minimum 30; bounds replay, does not prevent it
+   debounce_seconds = 2.0    # settle window, minimum 0.5: a burst collapses into one reconcile
+
+The shared secret is read from the ``WEBHOOK_HMAC_SECRET`` env variable and
+must match the ``ORIGIN_HMAC_SECRET`` configured on the ``door-webhook``
+Cloudflare Worker. Requests are signed as
+``HMAC_SHA256(secret, f"{timestamp}." + raw_body)`` with headers
+``X-Door-Sync-Timestamp`` and ``X-Door-Sync-Signature: sha256=<hex>``.
+
+See ``deploy/cloudflared.service`` and ``deploy/cloudflared-config.yml`` for the
+tunnel setup, and front the hostname with a Cloudflare Access service-token
+policy so only the Worker can reach it.
 
 
 Complete Example

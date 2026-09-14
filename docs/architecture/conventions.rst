@@ -113,18 +113,31 @@ follows the pure/impure boundary:
 - **Orchestrator tests** fake both clients to verify the wiring.
 
 
-Future: Webhook Receiver
-------------------------
+Webhook Receiver
+----------------
 
-The architecture accommodates a future webhook receiver for the day-pass flow
-(design guide Appendix C). When implemented:
+``webhook.py`` is a sync Flask application served by ``waitress`` in a second
+thread of the daemon. It is optional and disabled by default. See
+``architecture.md`` §13 for the full design; the conventions that matter when
+touching it:
 
-- A new ``webhook.py`` module will contain a Flask application
-- Flask runs via ``waitress`` in a second thread of the same daemon process
-- Webhook handlers call into ``unifi.client`` visitor methods — they do **not**
-  call ``orchestrator.reconcile()``
-- The webhook uses a separate UniFi API key with Visitor scope only
+- The HTTP thread **writes nothing**. It verifies the HMAC, enqueues a
+  ``ReconcileRequest`` and returns 202. The scheduler drains the queue and stays
+  the sole writer to UniFi, state, and the audit log, so no locks are needed.
+- ``webhook`` does **not** import ``orchestrator``. A trigger reaches
+  ``reconcile()`` only by way of the scheduler.
+- The bind address must be loopback; config validation enforces it rather than
+  merely documenting it.
+- Signal handlers set an ``Event`` and nothing else — never a queue operation,
+  which can self-deadlock on ``queue.Queue``'s non-reentrant mutex.
+- Logs identify members by ``contact_id`` only, never by name or card ID.
 
-The key constraint: the reconciler, safety, and tier_mapping modules remain
-pure and untouched. The orchestrator's signature does not change. No async
-migration is needed — the webhook is sync Flask.
+Still future: the day-pass flow (design guide Appendix C) adds
+``/day-pass/provision`` and ``/day-pass/revoke`` to the same receiver. Those
+handlers call ``unifi.client`` visitor methods directly with a separate
+Visitor-scope API key — they do not call ``orchestrator.reconcile()`` and do not
+enqueue reconcile triggers.
+
+The key constraint is unchanged: the reconciler, safety, and tier_mapping
+modules remain pure and untouched, the orchestrator's signature does not change,
+and there is no async migration — the receiver is sync Flask.

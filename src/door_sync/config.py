@@ -7,6 +7,7 @@ This module is not pure (it does file I/O), but it does NOT call sys.exit.
 Errors surface as ConfigError so callers can format and exit on their own terms.
 """
 
+import ipaddress
 import os
 import re
 import tomllib
@@ -138,6 +139,68 @@ class OpsPaths:
 
 
 @dataclass(frozen=True)
+class WebhookConfig:
+    """Embedded webhook-receiver settings. Secret: hmac_secret (from env).
+
+    The receiver is an optional Flask+waitress server run in a second thread of
+    the daemon (see webhook.py). It binds loopback only; a Cloudflare Tunnel
+    connects locally, so the Pi never exposes a public port.
+
+    Parameters:
+        enabled: Whether daemon mode starts the local webhook HTTP server.
+        host: Bind address. Must be loopback unless the [webhook]
+            allow_non_loopback escape hatch is set; see _validate_webhook.
+        port: TCP port for the local webhook server.
+        hmac_secret: Shared secret for HMAC-SHA256 request signing (env
+            WEBHOOK_HMAC_SECRET). Required only when enabled.
+        max_body_bytes: Reject request bodies larger than this (fail-closed).
+        max_skew_seconds: Reject signed requests whose timestamp is more than
+            this many seconds from now. This bounds the replay window; it does
+            not prevent replay within it (see webhook._verify_signature).
+        debounce_seconds: Settle window before a triggered reconcile runs, so a
+            burst of webhooks collapses into one cycle.
+    """
+
+    enabled: bool
+    host: str
+    port: int
+    hmac_secret: str
+    max_body_bytes: int
+    max_skew_seconds: int
+    debounce_seconds: float
+
+
+# Below this the freshness window is so tight that legitimate requests fail --
+# max_skew_seconds = 0 accepts only a request signed in the same second.
+_MIN_SKEW_SECONDS = 30
+# Below this the settle window cannot coalesce a burst, so every accepted
+# webhook drives its own full reconcile.
+_MIN_DEBOUNCE_SECONDS = 0.5
+
+
+def _is_loopback(host: str) -> bool:
+    """True for addresses that cannot be reached off-box. Non-IP names other
+    than "localhost" are treated as non-loopback (fail secure)."""
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+_DEFAULT_WEBHOOK_CONFIG = WebhookConfig(
+    enabled=False,
+    host="127.0.0.1",
+    port=8787,
+    hmac_secret="",
+    max_body_bytes=65536,
+    max_skew_seconds=300,
+    debounce_seconds=2.0,
+)
+
+
+@dataclass(frozen=True)
 class Config:
     """Top-level configuration assembled from TOML + env by `load()`.
 
@@ -149,6 +212,7 @@ class Config:
         tier_mapping: Rules mapping membership types to access policies.
         ops_paths: File paths for audit log, state, and alert flag.
         alert: Alert transport configuration.
+        webhook: Embedded webhook-receiver settings (disabled by default).
     """
 
     cadence_seconds: int
@@ -158,6 +222,7 @@ class Config:
     tier_mapping: TierMapping
     ops_paths: OpsPaths
     alert: AlertConfig
+    webhook: WebhookConfig = _DEFAULT_WEBHOOK_CONFIG
 
 
 @dataclass(frozen=True)
@@ -285,6 +350,7 @@ def load(
     tier_mapping = _validate_tier_mapping(data, issues)
     ops_paths = _validate_ops(data, issues)
     alert_config = _validate_alert(data, issues, env_get)
+    webhook = _validate_webhook(data, issues, env_get)
 
     if issues:
         raise ConfigError(issues)
@@ -297,6 +363,124 @@ def load(
         tier_mapping=tier_mapping,
         ops_paths=ops_paths,
         alert=alert_config,
+        webhook=webhook,
+    )
+
+
+def _validate_webhook(
+    data: dict[str, Any],
+    issues: list[ConfigIssue],
+    env_get: EnvGetter,
+) -> WebhookConfig:
+    """Validate the optional [webhook] table.
+
+    When absent or disabled, returns the disabled default and requires no
+    secret (mirrors _validate_alert returning the flag-file default). When
+    enabled, the HMAC secret comes from env WEBHOOK_HMAC_SECRET and is required.
+    """
+    section = data.get("webhook", {})
+    if not isinstance(section, dict):
+        issues.append(ConfigIssue(path="webhook", message="must be a table"))
+        return _DEFAULT_WEBHOOK_CONFIG
+
+    enabled = section.get("enabled", False)
+    if not isinstance(enabled, bool):
+        issues.append(
+            ConfigIssue(
+                path="webhook.enabled",
+                message=f"must be bool, got {type(enabled).__name__}",
+            )
+        )
+        return _DEFAULT_WEBHOOK_CONFIG
+    if not enabled:
+        return _DEFAULT_WEBHOOK_CONFIG
+
+    host = section.get("host", "127.0.0.1")
+    if not isinstance(host, str) or not host:
+        issues.append(ConfigIssue(path="webhook.host", message="must be non-empty string"))
+        host = "127.0.0.1"
+    elif not _is_loopback(host) and section.get("allow_non_loopback") is not True:
+        # The receiver is reached through the Cloudflare Tunnel; binding it
+        # anywhere else drops the Access service-token policy that is the first
+        # of the two locks in front of it, leaving only the HMAC.
+        issues.append(
+            ConfigIssue(
+                path="webhook.host",
+                message=(
+                    f"{host!r} is not a loopback address; the receiver must not be exposed "
+                    "directly (set webhook.allow_non_loopback = true to override)"
+                ),
+            )
+        )
+        host = "127.0.0.1"
+
+    port = section.get("port", 8787)
+    if isinstance(port, bool) or not isinstance(port, int):
+        issues.append(
+            ConfigIssue(path="webhook.port", message=f"must be int, got {type(port).__name__}")
+        )
+        port = 8787
+    elif not (1 <= port <= 65535):
+        issues.append(
+            ConfigIssue(path="webhook.port", message=f"must be between 1 and 65535, got {port}")
+        )
+        port = 8787
+
+    max_body = section.get("max_body_bytes", 65536)
+    if isinstance(max_body, bool) or not isinstance(max_body, int) or max_body <= 0:
+        issues.append(ConfigIssue(path="webhook.max_body_bytes", message="must be a positive int"))
+        max_body = 65536
+
+    max_skew = section.get("max_skew_seconds", 300)
+    if isinstance(max_skew, bool) or not isinstance(max_skew, int) or max_skew < _MIN_SKEW_SECONDS:
+        issues.append(
+            ConfigIssue(
+                path="webhook.max_skew_seconds",
+                message=f"must be an int >= {_MIN_SKEW_SECONDS}",
+            )
+        )
+        max_skew = 300
+
+    debounce_raw = section.get("debounce_seconds", 2.0)
+    if (
+        isinstance(debounce_raw, bool)
+        or not isinstance(debounce_raw, (int, float))
+        or debounce_raw < _MIN_DEBOUNCE_SECONDS
+    ):
+        issues.append(
+            ConfigIssue(
+                path="webhook.debounce_seconds",
+                message=f"must be a number >= {_MIN_DEBOUNCE_SECONDS}",
+            )
+        )
+        debounce = 2.0
+    else:
+        debounce = float(debounce_raw)
+
+    hmac_secret = (env_get("WEBHOOK_HMAC_SECRET") or "").strip()
+    if not hmac_secret:
+        issues.append(
+            ConfigIssue(
+                path="WEBHOOK_HMAC_SECRET",
+                message="required env var is missing or empty when webhook.enabled is true",
+            )
+        )
+    elif len(hmac_secret) < 16:
+        issues.append(
+            ConfigIssue(
+                path="WEBHOOK_HMAC_SECRET",
+                message="must be at least 16 characters",
+            )
+        )
+
+    return WebhookConfig(
+        enabled=True,
+        host=host,
+        port=port,
+        hmac_secret=hmac_secret,
+        max_body_bytes=max_body,
+        max_skew_seconds=max_skew,
+        debounce_seconds=debounce,
     )
 
 

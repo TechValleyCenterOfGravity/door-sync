@@ -1,0 +1,27 @@
+[Unit]
+Description=cloudflared tunnel for the door-sync webhook receiver
+After=network-online.target
+Wants=network-online.target
+# Cap restart flapping. These live in [Unit], not [Service] -- systemd >= 229
+# ignores them under [Service].
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=cloudflared
+Group=cloudflared
+ExecStart=/usr/local/bin/cloudflared tunnel --config /etc/cloudflared/config.yml run
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+
+# Hardening — the tunnel needs only outbound network + its config/credentials.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

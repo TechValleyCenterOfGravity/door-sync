@@ -47,7 +47,7 @@ Treat any pressure to make the service "faster" or "real-time" as suspicious. Th
 
 - The service has one busy moment per polling cycle. Concurrency benefit is nil.
 - The successor-IT-volunteer constraint (design guide §2 non-functional) prioritizes accessible code over modern idioms.
-- HTTP via `httpx` in sync mode. When the Appendix C webhook receiver lands, it lands as Flask + waitress in a second thread of the same process — not as FastAPI + asyncio.
+- HTTP via `httpx` in sync mode. The webhook receiver (§13) is Flask + waitress in a second thread of the same process — not FastAPI + asyncio.
 
 **Do not refactor to async** without explicit direction from a human maintainer.
 
@@ -78,7 +78,7 @@ door-sync/
 │   ├── audit.py             # JSON-lines structured audit log
 │   ├── state.py             # last-success timestamp; atomic-rename writes
 │   ├── alert.py             # halt-and-alert dispatch
-│   └── webhook.py           # (future, Appendix C) Flask app; calls orchestrator
+│   └── webhook.py           # Flask app; verifies HMAC, enqueues a reconcile trigger
 ├── tests/
 │   ├── test_reconciler.py
 │   ├── test_safety.py
@@ -106,9 +106,11 @@ door-sync/
 | `audit` | JSON-lines structured log of every diff applied or halted | `models` |
 | `state` | Persisting last-success timestamp | stdlib only |
 | `alert` | Sending alerts on halt or repeated failure (flag-file + optional SMTP or Mailgun) | `config`, `httpx` (Mailgun), `smtplib` (SMTP) |
-| `webhook` | (future) HTTP receiver for Appendix C day pass flow | `orchestrator`, `unifi.client` |
+| `webhook` | HTTP receiver: verifies the HMAC and enqueues a `ReconcileRequest`; never writes | `config`, `models`, `flask`, `waitress` |
 
-**Strict layering:** modules higher in this table do not import modules lower. The orchestrator imports everything; nothing imports the orchestrator except `scheduler` and (eventually) `webhook`.
+**Strict layering:** modules higher in this table do not import modules lower. The orchestrator imports everything; nothing imports the orchestrator except `scheduler`.
+
+`webhook` is top-of-graph but deliberately does **not** import `orchestrator` — it only enqueues work for the scheduler to run (§13.1). The day pass flow (§13.2) will add a dependency on `unifi.client`, still not on `orchestrator`.
 
 ---
 
@@ -374,7 +376,7 @@ def reconcile(config: Config, *, dry_run: bool) -> ReconcileResult:
 - Clients are constructed per cycle. They're cheap to instantiate; this gives clean per-cycle isolation and avoids stale HTTP session state.
 - The orchestrator owns I/O ordering; pure modules own correctness.
 - Exceptions propagate to the scheduler. The orchestrator does not catch.
-- The same function is the entry point for: the scheduler's loop, a `python -m door_sync run --once` CLI command, the future webhook handler's "trigger immediate sync" endpoint.
+- The same function is the entry point for: the scheduler's loop, a `python -m door_sync run --once` CLI command, and a webhook-triggered cycle — the receiver enqueues, the scheduler calls `reconcile()` (§13.1).
 
 ---
 
@@ -424,25 +426,42 @@ These decisions are intentionally deferred. When implementing them, update this 
 
 ---
 
-## 13. Future evolution: Appendix C webhook receiver
+## 13. Webhook receiver
 
-When the day pass flow (design guide Appendix C) is implemented, the architecture extends as follows:
+Phase 1 — CiviCRM-triggered reconciles — is **shipped**. The Appendix C day pass flow is still future work; it is described in §13.2.
 
-- **New module:** `webhook.py` containing a Flask application
-- **Process layout:** Flask runs via `waitress` in a second thread of the same daemon; main thread continues to run the scheduler loop
-- **New endpoints:** `POST /day-pass/provision` and `POST /day-pass/revoke`, both authenticated by HMAC against a shared secret in env
-- **Idempotency:** every webhook handler checks for an existing UniFi visitor schedule for the given email before creating one; duplicate deliveries are no-ops
-- **Shared code:** webhook handlers call into a new `unifi.client.visitor_*` method family; they do not call `orchestrator.reconcile()` (the day pass flow operates on visitors, not member users)
-- **API key separation:** webhook handlers use a separate UniFi API key with Visitor scope only (design guide §5)
+### 13.1 Shipped: CiviCRM-triggered reconciles
 
-**What must not change** when this evolution lands:
+- **Module:** `webhook.py` — a sync Flask application served by `waitress` in a second thread of the daemon. Optional, and disabled by default (`[webhook] enabled`).
+- **Process layout:** the main thread continues to run the scheduler loop; the receiver thread is a daemon thread started and stopped by `__main__` around `run_forever`.
+- **Endpoints:** `POST /civicrm/membership-changed` (HMAC-authenticated) and `GET /healthz` (unauthenticated liveness probe for cloudflared).
+- **Authentication:** HMAC-SHA256 over `f"{timestamp}." + raw_body`, constant-time compared, with the timestamp bound to `max_skew_seconds`. That bounds *freshness*, which is weaker than replay protection — there is no nonce or seen-signature cache, so a captured request can be replayed until it ages out of the window. Accepted because the trigger is a whole-population reconcile: idempotent, and coalesced before it runs.
+- **Exposure:** the receiver binds loopback only and config validation **enforces** it (`allow_non_loopback` is the explicit escape hatch). A Cloudflare Tunnel connects locally, so the Pi exposes no public port. A Cloudflare Access service-token policy is the first lock; the HMAC is the second, independent one.
+- **The HTTP thread writes nothing.** It verifies the signature, parses the payload for logging, puts a `ReconcileRequest` on a shared `queue.Queue`, and returns 202. It never touches UniFi, state, or the audit log, and it does not import `orchestrator`.
+- **The scheduler remains the sole writer.** Its loop drains the queue between cadence ticks. A queued trigger wakes it early, and a settle window (`debounce_seconds`) coalesces a burst into one reconcile. Because exactly one thread ever reaches UniFi/state/audit, no locks are required anywhere.
+- **A trigger always runs a FULL reconcile.** `contact_id` is carried for log provenance only; `orchestrator.reconcile()`'s signature is unchanged.
 
-- The reconciler, safety, and tier_mapping modules remain pure and untouched
-- The orchestrator's `reconcile()` signature does not change
-- The scheduler continues to run on its existing cadence; the webhook does not "speed up" the scheduler
-- No async/await migration. The webhook receiver is sync Flask.
+**The cadence is the idle upper bound between cycles, not a fixed interval.** An earlier draft of this section said the webhook "does not speed up the scheduler", written when the only anticipated receiver was the day pass flow, which does not reconcile members at all. §11's invariant always listed a webhook "trigger immediate sync" entry point into the same `reconcile()`, and that is what shipped. This paragraph is the reconciliation of those two statements.
 
-If an agent finds itself wanting to refactor the scheduler or orchestrator to support webhooks, that's a sign the design has drifted. The webhook should *use* the existing pieces, not reshape them.
+**What must not change:**
+
+- The reconciler, safety, and tier_mapping modules remain pure and untouched.
+- `orchestrator.reconcile()`'s signature does not change, and the webhook does not call it — the scheduler does.
+- The scheduler stays the only writer to UniFi, state, and the audit log. A webhook handler that needs to write is a sign the design has drifted.
+- The receiver stays loopback-bound behind the tunnel, with the bind enforced in config validation.
+- Shutdown stays prompt and deadlock-free: the signal handler sets an `Event` and nothing else, and the scheduler's wait polls it. Do not move queue operations into a signal handler.
+- No async/await migration. The receiver is sync Flask + waitress.
+
+### 13.2 Still future: Appendix C day pass flow
+
+When the day pass flow (design guide Appendix C) is implemented, it extends the same receiver:
+
+- **New endpoints:** `POST /day-pass/provision` and `POST /day-pass/revoke`, both authenticated by the same HMAC scheme
+- **Idempotency:** every handler checks for an existing UniFi visitor schedule for the given email before creating one; duplicate deliveries are no-ops
+- **Shared code:** handlers call into a new `unifi.client.visitor_*` method family; they do not call `orchestrator.reconcile()` (the day pass flow operates on visitors, not member users) and they do not enqueue reconcile triggers
+- **API key separation:** handlers use a separate UniFi API key with Visitor scope only (design guide §5)
+
+The day pass flow writes to UniFi directly rather than through the scheduler, so it is the one place the single-writer rule above is relaxed — it touches visitors, which the reconciler never reads or writes. Keep that boundary sharp: if a day pass handler ever needs to touch member users, route it through the queue instead.
 
 ---
 

@@ -82,6 +82,19 @@ rank = 10
 # to = ["admin@example.com"]
 # subject_prefix = "[door-sync]"
 
+# Embedded webhook receiver (optional; disabled by default). When enabled, the
+# daemon runs a loopback-only Flask+waitress server in a second thread that a
+# Cloudflare Tunnel connects to locally — the Pi never exposes a public port.
+# Incoming requests must carry a valid HMAC signature (secret WEBHOOK_HMAC_SECRET
+# in the env file). See docs/configuration.rst and deploy/cloudflared-config.yml.
+# [webhook]
+# enabled = true
+# host = "127.0.0.1"        # loopback enforced; set allow_non_loopback = true to override
+# port = 8787
+# max_body_bytes = 65536    # reject larger request bodies (fail-closed)
+# max_skew_seconds = 300    # freshness window, minimum 30; bounds replay, does not prevent it
+# debounce_seconds = 2.0    # settle window, minimum 0.5: a burst collapses into one reconcile
+
 [ops]
 # Operational file paths. All three are optional; defaults shown.
 # - audit_jsonl: append-only JSONL of every cycle's outcome (logrotate-friendly).
