@@ -64,30 +64,56 @@ and an env file for secrets (API keys, SMTP credentials). See the
 Deploying with systemd
 ----------------------
 
-door-sync is designed to run as a long-lived systemd service on a Raspberry Pi
-(or any Linux host). The steps below assume you are deploying to a dedicated
-service account.
+door-sync runs as a long-lived systemd service on a Raspberry Pi (or any Linux
+host). The current deployment is a **Raspberry Pi 3 running Raspberry Pi OS
+Lite (64-bit)**, installed from the Debian package.
 
-Creating a service account
-^^^^^^^^^^^^^^^^^^^^^^^^^^
+.. note::
+
+   The immutable A/B appliance image under ``deploy/rpi-image-gen/`` is a
+   different deployment model and requires a **Raspberry Pi 4 or later** —
+   Raspberry Pi's A/B boot updates do not support the Pi 3. This page is the
+   path in use today.
+
+Installing the package
+^^^^^^^^^^^^^^^^^^^^^^
+
+Install from a release asset. The package is ``Architecture: all``, so one
+``.deb`` serves any Pi:
 
 .. code-block:: bash
+
+   curl -fsSLO https://github.com/TechValleyCenterOfGravity/door-sync/releases/latest/download/door-sync_0.2.0_all.deb
+   sudo apt install ./door-sync_0.2.0_all.deb
+
+``apt`` resolves the runtime dependencies (``python3-flask``, ``python3-httpx``,
+``python3-waitress``) from Debian, so nothing is vendored into a virtualenv and
+everything door-sync runs is recorded by dpkg.
+
+The package does the setup this page used to describe by hand: it creates the
+``door-sync`` service account, ``/etc/door-sync``, ``/var/lib/door-sync`` and
+``/var/log/door-sync``, installs ``door-sync.service`` and the logrotate
+config, and places examples under ``/usr/share/door-sync/``. It does **not**
+start the service — there is no configuration yet.
+
+Skip to :ref:`setting-up-configuration` unless you are installing from source.
+
+Installing from source instead
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Only if you are not using the package. Build a wheel and install the CLI to
+``/usr/local/bin``, which is where the reference unit's ``ExecStart`` points:
+
+.. code-block:: bash
+
+   uv build
+   sudo uv tool install ./dist/door_sync-*.whl
 
    sudo useradd --system --shell /usr/sbin/nologin --home-dir /opt/door-sync door-sync
+   sudo mkdir -p /etc/door-sync /var/lib/door-sync /var/log/door-sync
+   sudo chown -R door-sync:door-sync /var/lib/door-sync /var/log/door-sync
 
-Installing the application
-^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-Clone the repository and install dependencies under the service account's home
-directory:
-
-.. code-block:: bash
-
-   sudo mkdir -p /opt/door-sync
-   sudo chown door-sync:door-sync /opt/door-sync
-   cd /opt/door-sync
-   sudo -u door-sync git clone https://github.com/TechValleyCenterOfGravity/door-sync.git .
-   sudo -u door-sync uv sync
+.. _setting-up-configuration:
 
 Setting up configuration
 ^^^^^^^^^^^^^^^^^^^^^^^^
@@ -129,12 +155,16 @@ These paths are configurable in ``config.toml`` under ``[ops]``.
 Installing the unit file
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
-A reference unit file is provided in the repository at
-``deploy/door-sync.service``. Copy it into place:
+The package installs the unit at ``/usr/lib/systemd/system/door-sync.service``
+with ``ExecStart=/usr/bin/door-sync``; there is nothing to copy. Skip to
+enabling it below.
+
+For a source install, copy the reference unit from the repository — it points
+``ExecStart`` at ``/usr/local/bin/door-sync``, matching ``uv tool install``:
 
 .. code-block:: bash
 
-   sudo cp /opt/door-sync/deploy/door-sync.service /etc/systemd/system/
+   sudo cp deploy/door-sync.service /etc/systemd/system/
 
 The unit file contents:
 
@@ -177,13 +207,78 @@ The audit log at ``/var/log/door-sync/audit.jsonl`` grows over time. It is
 compatible with logrotate's ``copytruncate`` strategy (the daemon opens the
 file in append mode per write, with no long-lived file handle).
 
-A reference logrotate config is provided at ``deploy/door-sync.logrotate``.
-Copy it into place:
+The package installs this at ``/etc/logrotate.d/door-sync`` already. For a
+source install, copy the reference config from the repository:
 
 .. code-block:: bash
 
-   sudo cp /opt/door-sync/deploy/door-sync.logrotate /etc/logrotate.d/door-sync
+   sudo cp deploy/door-sync.logrotate /etc/logrotate.d/door-sync
 
 The logrotate config contents:
 
 .. literalinclude:: ../deploy/door-sync.logrotate
+
+
+Installing cloudflared
+^^^^^^^^^^^^^^^^^^^^^^
+
+Only needed if the webhook receiver is enabled. The receiver binds to loopback
+and is reached through a Cloudflare Tunnel, so CiviCRM deliveries arrive via
+``cloudflared`` rather than an open inbound port.
+
+Install from Cloudflare's official ``.deb`` rather than their apt repository:
+the repo floats, and a pinned package is what the appliance image installs too,
+so both paths run the same binary. The package installs to
+``/usr/bin/cloudflared`` and ships no unit of its own.
+
+.. code-block:: bash
+
+   curl -fsSLo cloudflared.deb \
+     https://github.com/cloudflare/cloudflared/releases/download/2026.9.1/cloudflared-linux-arm64.deb
+   echo "2a870d5bf6ea74d16c0923b804eabbf4943f1fd7c63a5c20fd41cc66b629c725  cloudflared.deb" \
+     | sha256sum -c -
+   sudo apt install ./cloudflared.deb
+   cloudflared --version
+
+The checksum is the same pin the appliance layer verifies
+(``deploy/rpi-image-gen/layer/cloudflared.yaml``). Change the version and the
+checksum together; they are per-release.
+
+Create the service account and the config directory. ``cloudflared`` must be
+able to read its own credentials, so the directory is owned by it:
+
+.. code-block:: bash
+
+   sudo useradd --system --shell /usr/sbin/nologin --no-create-home cloudflared
+   sudo install -d -m0750 -o cloudflared -g cloudflared /etc/cloudflared
+
+Create the tunnel and place ``config.yml`` and the credentials JSON in
+``/etc/cloudflared/``, following Cloudflare's tunnel documentation. Point the
+ingress rule at the webhook's loopback address — ``127.0.0.1:8787`` by default,
+matching ``webhook.port`` in ``config.toml``.
+
+A reference unit is provided at ``deploy/cloudflared.service``. It runs the
+tunnel as the dedicated ``cloudflared`` account under ``NoNewPrivileges``,
+``ProtectSystem=strict`` and ``ProtectHome``, rather than as root:
+
+.. code-block:: bash
+
+   sudo cp deploy/cloudflared.service /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now cloudflared
+
+.. note::
+
+   Do not use ``cloudflared service install``. It generates a unit at run time
+   that runs the tunnel as **root** and expects config at
+   ``$HOME/.cloudflared/config.yml``. Passing ``--config /etc/cloudflared/config.yml``
+   is Cloudflare's own documented override, so the unit here is declarative
+   rather than generated, and unprivileged.
+
+If webhook deliveries stop arriving, check the tunnel first — door-sync's logs
+will say nothing at all, because the request never reaches it:
+
+.. code-block:: bash
+
+   sudo systemctl status cloudflared
+   sudo journalctl -u cloudflared -n 50

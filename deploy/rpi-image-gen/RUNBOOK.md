@@ -3,6 +3,11 @@
 Operating a flashed door-sync appliance: first boot, changing configuration,
 checking health, and updating. For how the image is *built*, see `README.md`.
 
+> **Requires a Raspberry Pi 4 or later.** The A/B boot layout this runbook
+> assumes does not work on a Pi 3 — see the hardware note in `README.md`. The
+> current deployment is a Pi 3 installed from the Debian package instead
+> (`docs/usage.rst`); this runbook applies once the hardware moves.
+
 **Nothing here has been exercised on a real device yet.** The image builds in
 CI but has not been flashed. Treat every procedure as needing confirmation on
 first use, and correct this file when it disagrees with reality.
