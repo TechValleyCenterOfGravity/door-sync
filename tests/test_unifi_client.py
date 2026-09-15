@@ -1153,7 +1153,7 @@ def test_apply_deactivate_removes_nfc_card(
     )
     # Card removal write.
     httpx_mock.add_response(
-        method="DELETE",
+        method="PUT",
         url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42/nfc_cards/delete",
         json={"code": "SUCCESS", "msg": "success", "data": None},
     )
@@ -1165,7 +1165,7 @@ def test_apply_deactivate_removes_nfc_card(
     ]
     # The card is freed first (while active), then the account is deactivated.
     assert writes == [
-        ("DELETE", "/api/v1/developer/users/uuid-42/nfc_cards/delete"),
+        ("PUT", "/api/v1/developer/users/uuid-42/nfc_cards/delete"),
         ("PUT", "/api/v1/developer/users/uuid-42"),
     ]
     put_req = next(
@@ -1177,7 +1177,7 @@ def test_apply_deactivate_removes_nfc_card(
     delete_req = next(
         r
         for r in httpx_mock.get_requests()
-        if r.method == "DELETE" and r.url.path.endswith("/nfc_cards/delete")
+        if r.method == "PUT" and r.url.path.endswith("/nfc_cards/delete")
     )
     assert _json.loads(delete_req.content) == {"token": "tok-1234"}
 
@@ -1246,8 +1246,9 @@ def test_apply_bind_conflict_active_holder_names_and_raises(
         with pytest.raises(UnifiClientError) as exc_info:
             client.apply(_diff(to_update_credential=((resolved, target),)))
 
-    # No reclaim: the active holder's card is never deleted.
-    assert not [r for r in httpx_mock.get_requests() if r.method == "DELETE"]
+    # No reclaim: the active holder's card is never deleted. Matched by path --
+    # unassign is a PUT, so the method alone no longer identifies it.
+    assert not [r for r in httpx_mock.get_requests() if r.url.path.endswith("/nfc_cards/delete")]
 
     msg = str(exc_info.value)
     # The failing member and the current holder are both identified — by id, not
@@ -1333,8 +1334,10 @@ def test_apply_bind_conflict_reclaims_card_from_disabled_holder(
         # No raise: the card is reclaimed and bound.
         client.apply(_diff(to_update_credential=((resolved, target),)))
 
-    # No DELETE is attempted — card mutations on a deactivated user are rejected.
-    assert not [r for r in httpx_mock.get_requests() if r.method == "DELETE"]
+    # No unassign is attempted — door-sync force-reassigns instead. Whether UniFi
+    # would now accept one is untested: the belief that it rejects card mutations
+    # on a deactivated account rests on a 404 that the wrong HTTP method explains.
+    assert not [r for r in httpx_mock.get_requests() if r.url.path.endswith("/nfc_cards/delete")]
     # Two binds to 7590: the rejected force_add=false, then a force_add=true retry.
     binds = [
         _json.loads(r.content)
@@ -1467,7 +1470,7 @@ def test_deactivate_with_failed_card_delete_allows_same_cycle_reclaim(
 
     # The pre-deactivation card delete fails (error envelope) ...
     httpx_mock.add_response(
-        method="DELETE",
+        method="PUT",
         url="https://192.0.2.1:12445/api/v1/developer/users/uuid-5000/nfc_cards/delete",
         json={"code": "CODE_NOT_FOUND", "msg": "no-man zone", "data": None},
     )
@@ -1561,7 +1564,7 @@ def test_apply_update_credential_swaps_card(
     )
     # DELETE old card.
     httpx_mock.add_response(
-        method="DELETE",
+        method="PUT",
         url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42/nfc_cards/delete",
         json={"code": "SUCCESS", "msg": "success", "data": None},
     )
@@ -1580,7 +1583,7 @@ def test_apply_update_credential_swaps_card(
     delete_req = next(
         r
         for r in httpx_mock.get_requests()
-        if r.method == "DELETE" and r.url.path.endswith("/nfc_cards/delete")
+        if r.method == "PUT" and r.url.path.endswith("/nfc_cards/delete")
     )
     assert _json.loads(delete_req.content) == {"token": "tok-1234"}
     # And the PUT body referenced the NEW token.
@@ -2037,8 +2040,10 @@ def test_apply_reactivate_inactive_user_path(
     resolved = _resolved(contact_id=42, card_id=1234)
     client.apply(_diff(to_add=(resolved,)))
 
-    # No DELETE calls.
-    delete_calls = [r for r in httpx_mock.get_requests() if r.method == "DELETE"]
+    # No card-unassign calls.
+    delete_calls = [
+        r for r in httpx_mock.get_requests() if r.url.path.endswith("/nfc_cards/delete")
+    ]
     assert delete_calls == []
 
     # First PUT is profile-only (no status), final PUT is activation-only.
@@ -2170,7 +2175,7 @@ def test_apply_reactivate_swaps_card_when_changed(
     )
     # DELETE old card.
     httpx_mock.add_response(
-        method="DELETE",
+        method="PUT",
         url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42/nfc_cards/delete",
         json={"code": "SUCCESS", "msg": "success", "data": None},
     )
@@ -2203,7 +2208,7 @@ def test_apply_reactivate_swaps_card_when_changed(
     ]
     assert methods_paths == [
         ("PUT", "/api/v1/developer/users/uuid-42"),
-        ("DELETE", "/api/v1/developer/users/uuid-42/nfc_cards/delete"),
+        ("PUT", "/api/v1/developer/users/uuid-42/nfc_cards/delete"),
         ("PUT", "/api/v1/developer/users/uuid-42/nfc_cards"),
         ("PUT", "/api/v1/developer/users/uuid-42/access_policies"),
         ("PUT", "/api/v1/developer/users/uuid-42"),
@@ -2268,8 +2273,8 @@ def test_apply_executes_deactivate_update_credential_update_policy_add_order(
     # Pre-set generic SUCCESS responses for the writes.
     for url, method in [
         ("https://192.0.2.1:12445/api/v1/developer/users/u100", "PUT"),
-        ("https://192.0.2.1:12445/api/v1/developer/users/u100/nfc_cards/delete", "DELETE"),
-        ("https://192.0.2.1:12445/api/v1/developer/users/u101/nfc_cards/delete", "DELETE"),
+        ("https://192.0.2.1:12445/api/v1/developer/users/u100/nfc_cards/delete", "PUT"),
+        ("https://192.0.2.1:12445/api/v1/developer/users/u101/nfc_cards/delete", "PUT"),
         ("https://192.0.2.1:12445/api/v1/developer/users/u101/nfc_cards", "PUT"),
         ("https://192.0.2.1:12445/api/v1/developer/users/u102/access_policies", "PUT"),
     ]:
@@ -2295,9 +2300,9 @@ def test_apply_executes_deactivate_update_credential_update_policy_add_order(
     # Expected order: deactivate(100) frees its card (while active) then sets
     # status, update_credential(101 DELETE then PUT card), update_policy(102).
     assert write_path_methods == [
-        ("DELETE", "/api/v1/developer/users/u100/nfc_cards/delete"),
+        ("PUT", "/api/v1/developer/users/u100/nfc_cards/delete"),
         ("PUT", "/api/v1/developer/users/u100"),
-        ("DELETE", "/api/v1/developer/users/u101/nfc_cards/delete"),
+        ("PUT", "/api/v1/developer/users/u101/nfc_cards/delete"),
         ("PUT", "/api/v1/developer/users/u101/nfc_cards"),
         ("PUT", "/api/v1/developer/users/u102/access_policies"),
     ]
@@ -3087,7 +3092,7 @@ def test_apply_update_credential_removes_card(
 
     # DELETE old card.
     httpx_mock.add_response(
-        method="DELETE",
+        method="PUT",
         url="https://192.0.2.1:12445/api/v1/developer/users/uuid-42/nfc_cards/delete",
         json={"code": "SUCCESS", "msg": "success", "data": None},
     )
@@ -3101,7 +3106,9 @@ def test_apply_update_credential_removes_card(
     )
     client.apply(_diff(to_update_credential=((resolved, fetched[0]),)))
 
-    delete_req = next(r for r in httpx_mock.get_requests() if r.method == "DELETE")
+    delete_req = next(
+        r for r in httpx_mock.get_requests() if r.url.path.endswith("/nfc_cards/delete")
+    )
     assert _json.loads(delete_req.content) == {"token": "tok-1234"}
     # No bind (PUT .../nfc_cards) and no import.
     bind_calls = [
