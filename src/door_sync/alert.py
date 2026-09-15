@@ -58,19 +58,36 @@ def clear(
         path: Path to the alert flag file.
         alert_config: Email transport settings, or None for flag-file only.
     """
-    path.unlink(missing_ok=True)
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        # A flag that cannot be cleared errs toward alarming, which is the safe
+        # direction, but the operator needs to know why it is stuck.
+        _logger.error("could not clear alert flag %s: %s", path, exc)
     if alert_config is not None:
         _dispatch(alert_config, subject="RESOLVED", body="Previous alert cleared.")
 
 
 def _write_flag(reason: str, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8") as fh:
-        fh.write(reason + "\n")
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp, path)
+    """Write the flag atomically; never let an unwritable path escalate.
+
+    The flag is a monitoring signal, not the halt itself -- the reason is
+    already on the logger by the time this runs. If the path cannot be written
+    (a stale absolute path in a device-provisioned config, a full disk, a
+    directory the service user cannot reach) that must not turn a controlled
+    halt into an unhandled exception, nor raise from inside the crash handler
+    that calls this.
+    """
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        with tmp.open("w", encoding="utf-8") as fh:
+            fh.write(reason + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except OSError as exc:
+        _logger.error("could not write alert flag %s: %s", path, exc)
 
 
 def _dispatch(config: AlertConfig, *, subject: str, body: str) -> None:

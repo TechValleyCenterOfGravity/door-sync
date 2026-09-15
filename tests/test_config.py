@@ -1,3 +1,4 @@
+import os
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
@@ -1332,3 +1333,19 @@ def test_env_permissions_flags_group_or_world_access(tmp_path: Path, mode: int) 
 def test_env_permissions_missing_file_is_silent(tmp_path: Path) -> None:
     """load() reports an absent env file with better context; don't double up."""
     assert config.check_env_permissions(tmp_path / "nope") == []
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
+def test_unreadable_env_file_is_a_config_issue_not_a_traceback(tmp_path: Path) -> None:
+    """chmod 0400 without a matching chown is the expected way to hit this."""
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("")
+    env = tmp_path / "env"
+    env.write_text("CIVICRM_API_KEY=x\n")
+    env.chmod(0o000)
+    try:
+        with pytest.raises(ConfigError) as exc:
+            load(config_path=cfg, env_path=env)
+    finally:
+        env.chmod(0o600)
+    assert any(i.path == "env_file" and "cannot read" in i.message for i in exc.value.issues)

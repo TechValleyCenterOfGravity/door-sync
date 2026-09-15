@@ -19,8 +19,10 @@ That is fail-secure and expected. It is not a broken image.
 
 ## First boot
 
-Everything in this section happens over the Raspberry Pi Connect **remote
-shell**. Connect sign-in is independent of door-sync's config, so the device is
+Step 1 needs a console — a keyboard and monitor on the device, or whatever
+access method the sign-in method you choose requires. There is no remote shell
+before sign-in. Steps 2 onward can all be done over the Connect remote shell,
+because Connect sign-in is independent of door-sync's config: the device is
 reachable while door-sync is still restart-looping.
 
 Screen sharing is *not* available: it requires Wayland and does not work on
@@ -37,19 +39,26 @@ Raspberry Pi OS Lite, which this image is built from.
    sudo nano /etc/door-sync/config.toml
    ```
 
-3. **Write the secrets.** Six keys, of which the last three are only needed for
-   the alert transport you use: `CIVICRM_API_KEY`, `UNIFI_API_KEY`,
-   `WEBHOOK_HMAC_SECRET`, then `SMTP_USERNAME`, `SMTP_PASSWORD`,
-   `MAILGUN_API_KEY`.
+3. **Write the secrets.** Always needed: `CIVICRM_API_KEY` and `UNIFI_API_KEY`.
+   `WEBHOOK_HMAC_SECRET` is needed only when `webhook.enabled` is true, and
+   then it is required. `SMTP_USERNAME` + `SMTP_PASSWORD`, or
+   `MAILGUN_API_KEY`, are needed only for the matching alert transport;
+   the default flag-file transport needs neither.
 
    ```sh
    sudo cp /usr/share/door-sync/env.example /etc/door-sync/env
    sudo nano /etc/door-sync/env
+   sudo chown door-sync:door-sync /etc/door-sync/env
    sudo chmod 0400 /etc/door-sync/env
    ```
 
-   The `chmod` is not optional. A file created by the usual umask is 0644 —
-   world-readable API keys. `validate-config` fails if you forget.
+   **Both the `chown` and the `chmod` matter, in that order.** The `chmod` is
+   what stops the API keys being world-readable — a file created by the usual
+   umask is 0644. The `chown` is what keeps door-sync able to read them:
+   systemd reads `EnvironmentFile=` as root, but door-sync *also* reads the
+   file itself, as `User=door-sync`. Leave it root-owned at 0400 and the
+   service fails while `sudo validate-config` still passes, because root
+   ignores the mode.
 
    Prefer editing in place over pasting a heredoc: a heredoc body becomes part
    of the command line, so `sudo tee ... <<EOF` writes your API keys into shell

@@ -374,6 +374,12 @@ def load(
         file_env = _load_env_file(env_path)
     except ValueError as e:
         issues.append(ConfigIssue(path="env_file", message=str(e)))
+    except OSError as e:
+        # Readable by root but not by the service account is the likely cause:
+        # the file is provisioned by hand and chmod 0400 without a matching
+        # chown leaves it root-only. Absent files are not an error here --
+        # _load_env_file returns {} -- so this is a genuine read failure.
+        issues.append(ConfigIssue(path="env_file", message=f"cannot read {env_path}: {e}"))
 
     def env_get(name: str) -> str | None:
         # File wins if the key is present at all (even if empty),

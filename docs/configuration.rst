@@ -269,7 +269,9 @@ Each rule has three fields:
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 These paths control where the daemon writes its audit log, persistent state,
-and alert flag file. Both directories must exist and be writable by the
+and alert flag file. Each is configurable independently, so they need not share
+a parent. Missing parent directories are created on first write, so what each
+path actually requires is that its parent be creatable and writable by the
 service account.
 
 .. code-block:: toml

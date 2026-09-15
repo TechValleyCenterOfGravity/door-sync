@@ -57,7 +57,7 @@ Recurring true-positive: CodeQL `py/ineffectual-statement` flags `...` (Ellipsis
 
 ## Config
 
-Two-file split: secrets in env (`.env` dev, `/etc/door-sync/env` prod, mode 0400), everything else in TOML (`config.toml` dev, `/etc/door-sync/config.toml` prod). `DOOR_SYNC_CONFIG_DIR` selects the directory; the service sets it to `/etc/door-sync`.
+Two-file split: secrets in env (`.env` dev, `/etc/door-sync/env` prod, mode 0400 **owned by the service account** — the daemon reads this file itself as `User=door-sync`, not only via systemd's `EnvironmentFile=`, so root-owned 0400 locks it out), everything else in TOML (`config.toml` dev, `/etc/door-sync/config.toml` prod). `DOOR_SYNC_CONFIG_DIR` selects the directory; the service sets it to `/etc/door-sync`.
 
 Validation is implemented. Each `[table]` has its own validator in `config.py`; they accumulate `ConfigIssue`s rather than raising on the first bad key, and `ConfigError` carries the whole list so `validate-config` can print every problem at once. Add validation alongside any new key — do not read raw TOML at the call site.
 
