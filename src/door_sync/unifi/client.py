@@ -610,8 +610,14 @@ class UnifiClient:
             old_token = str(old_card.get("token", ""))
             if not old_token or old_token == keep_token:
                 continue
+            # PUT, not DELETE. The official API reference gives "Method: PUT"
+            # for this endpoint; its cURL sample shows -XDELETE, but the samples
+            # in that document are misaligned with their sections. UniFi routes
+            # on method+path, so DELETE matched no route and came back 404
+            # CODE_NOT_FOUND "you entered no-man zone" -- an endpoint-not-found
+            # error that reads like a permissions or state error.
             self._request(
-                "DELETE",
+                "PUT",
                 f"/api/v1/developer/users/{user_id}/nfc_cards/delete",
                 json={"token": old_token},
             )
@@ -621,10 +627,15 @@ class UnifiClient:
         """Issue the raw card-bind request for one user.
 
         ``force_add=False`` (default) never displaces another user. ``force_add=
-        True`` is used only to reclaim a card from a *disabled* holder: the card
-        cannot be unbound from a deactivated user (UniFi answers card mutations on
-        a deactivated account with HTTP 404 "no-man zone"), so the only way to
-        move it is to force the new bind, which reassigns it.
+        True`` is used only to reclaim a card from a *disabled* holder.
+
+        That reclaim exists because unbinding a card from a deactivated user was
+        believed impossible -- UniFi answered with HTTP 404 "no-man zone". That
+        404 is now explained: the unassign call used DELETE where the API
+        documents PUT, so it matched no route whatever the account status. The
+        force-bind still works and is left in place, but its premise is untested
+        against a real controller now that the method is correct. If a plain
+        unassign does work on a deactivated account, this path can be simplified.
         """
         self._request(
             "PUT",
@@ -786,11 +797,14 @@ class UnifiClient:
                 )
                 continue
             # Free the departed member's card(s) *before* deactivating, so the
-            # number can be reassigned. This must happen while the account is
-            # still active: UniFi rejects card mutations on a deactivated user
-            # (HTTP 404 "no-man zone"). Best-effort — a cleanup failure must not
-            # block cutting access; any card left behind is reclaimed (force_add)
-            # when the number is next assigned (see _bind_nfc_card).
+            # number can be reassigned. The ordering was chosen because UniFi
+            # appeared to reject card mutations on a deactivated user (HTTP 404
+            # "no-man zone"); that 404 turned out to be a wrong HTTP method on
+            # the unassign call, so the constraint is unconfirmed. Freeing first
+            # is still the right order -- it keeps the window in which a departed
+            # member holds a live card as short as possible. Best-effort: a
+            # cleanup failure must not block cutting access; any card left behind
+            # is reclaimed (force_add) when next assigned (see _bind_nfc_card).
             try:
                 self._delete_cards_for_contact(user_id, unifi_user.contact_id)
             except UnifiClientError as card_exc:
