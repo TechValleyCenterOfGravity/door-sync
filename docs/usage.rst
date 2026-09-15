@@ -83,8 +83,9 @@ Install from a release asset. The package is ``Architecture: all``, so one
 
 .. code-block:: bash
 
-   curl -fsSLO https://github.com/TechValleyCenterOfGravity/door-sync/releases/latest/download/door-sync_0.2.0_all.deb
-   sudo apt install ./door-sync_0.2.0_all.deb
+   VERSION=0.3.0
+   curl -fsSLO "https://github.com/TechValleyCenterOfGravity/door-sync/releases/download/v${VERSION}/door-sync_${VERSION}_all.deb"
+   sudo apt install "./door-sync_${VERSION}_all.deb"
 
 ``apt`` resolves the runtime dependencies (``python3-flask``, ``python3-httpx``,
 ``python3-waitress``) from Debian, so nothing is vendored into a virtualenv and

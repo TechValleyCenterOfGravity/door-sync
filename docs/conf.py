@@ -5,7 +5,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 project = "door-sync"
 author = "Ryan Morash"
-release = "0.2.0"
+release = "0.3.0"
 
 extensions = [
     "sphinx.ext.autodoc",
