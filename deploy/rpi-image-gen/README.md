@@ -5,6 +5,21 @@ Builds door-sync as an immutable A/B appliance image using
 `image-rota` layer: read-only root, two system slots, rollback by flipping the
 slot, and all writable state on a shared persistent partition.
 
+> **Requires a Raspberry Pi 4 or later. Not deployable to a Pi 3.**
+>
+> Raspberry Pi's A/B boot documentation states this twice: "the recipient
+> device must be a Raspberry Pi 4 or later". The tryboot slot flip this design
+> rests on is a bootloader feature the Pi 3 does not have, so nothing
+> `image-rota` provides — immutable root, two slots, rollback, OTA — works
+> there.
+>
+> **CI cannot catch this.** The image builds on a runner that is not a Pi at
+> all, so a Pi 3 target would build cleanly and fail on the device.
+>
+> The current deployment is a Pi 3 installed from the Debian package instead;
+> see `docs/usage.rst`. This directory is kept for when the hardware moves to a
+> Pi 4 or later.
+
 **Status: builds in CI, never flashed.** The image and OTA bundle build
 successfully on `ubuntu-24.04-arm` and ship as release assets, so the layer
 definitions are known-good to the point of producing artefacts. No device has
@@ -302,9 +317,3 @@ reflash. Revisit if card size ever becomes the binding constraint.
 `persistent` cannot be measured from a build: it is empty until the device runs,
 and its growth is `audit.jsonl` between logrotate runs. 4G is still a judgement
 call, just a well-padded one.
-
-## Known gaps
-
-- **`docs/usage.rst` never documents installing cloudflared.** Independent of
-  this directory: the manual deployment path ships a unit for a binary the docs
-  never tell you to install. Worth a paragraph pointing at the official `.deb`.
