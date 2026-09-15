@@ -1,13 +1,17 @@
-# rpi-image-gen appliance build (draft)
+# rpi-image-gen appliance build
 
 Builds door-sync as an immutable A/B appliance image using
 [rpi-image-gen](https://github.com/raspberrypi/rpi-image-gen) with the
 `image-rota` layer: read-only root, two system slots, rollback by flipping the
 slot, and all writable state on a shared persistent partition.
 
-**Status: draft, never built.** Authored against upstream docs and layer
-sources; it has not been run. Lint it (`ig` metadata lint, per upstream's
-`layer/LAYER_BEST_PRACTICES`) and build it before trusting any of it.
+**Status: builds in CI, never flashed.** The image and OTA bundle build
+successfully on `ubuntu-24.04-arm` and ship as release assets, so the layer
+definitions are known-good to the point of producing artefacts. No device has
+been imaged from them, so nothing downstream of "it builds" is confirmed:
+booting, the A/B flip, slot-shared mounts, and every procedure in `RUNBOOK.md`
+are all untested. `ig` metadata lint (upstream's `layer/LAYER_BEST_PRACTICES`)
+has still not been run.
 
 ## Files
 
@@ -220,13 +224,21 @@ deploy or roll back, so keep it in step with the door-sync release it carries.
   `image-rota` still gives immutable A/B roots and rollback, and updates become
   reflash-or-bring-your-own-transport.
 
-**Still open: first-boot sign-in.** Either a per-device identity (Connect for
-Organisations, no credentials in the image) or an embedded single-use auth key
-passed at build time. Prefer the former — an auth key baked into an image is a
-secret living in an artefact you may later want to rebuild or hand to someone
-else. With a single device, interactive `rpi-connect signin` at provisioning
-time is a third option worth checking: it needs console access once and puts no
-secret in the image at all.
+**Decided: interactive sign-in at provisioning.** `rpi-connect signin` prints a
+verification URL (`connect.raspberrypi.com/verify/XXXX-XXXX`) which you open on
+*any* device to complete the link, so it works headless — no browser on the Pi,
+which matters because this image is Raspberry Pi OS Lite. It needs a console
+once, which first provisioning needs anyway.
+
+The alternatives both cost more for one device. A baked auth key is a secret
+living in an artefact you may later rebuild or hand to someone else, and
+personal auth keys expire six hours after creation with only one active at a
+time — so the image would have to be flashed almost immediately after the key
+was minted. Connect for Organisations solves that with per-device identities,
+but it is machinery for a fleet, and this is one door.
+
+Note that Connect signs communication with the device's serial number: moving
+the card to another Pi signs it out, and you sign in again.
 
 ## Building it in CI
 
@@ -270,10 +282,29 @@ For releases the workflow asserts that `artefact.version` in the config matches
 the tag. A bundle labelled with the wrong version is worse than a failed build
 when the thing being updated is a door controller.
 
+## Partition sizing, measured
+
+Taken from the v0.2.0 OTA bundle, whose members are the sparse images written
+to each slot. EROFS is compressed and dense, so the sparse size is a fair proxy
+for what actually lands on the partition.
+
+| Partition | Used | Allocated | |
+| --- | --- | --- | --- |
+| `system` (per slot) | ~266 MiB | 1 GiB | 26% |
+| `boot` (per slot) | ~48 MiB | 128 MiB | 38% |
+| `persistent` (shared) | empty at build | 4 GiB | — |
+
+So 1G per slot is roomy: the inherited 512M default would in fact have fit, at
+~52%. It is kept at 1G deliberately — the headroom costs 1 GiB of card and buys
+room for a larger Python or added dependencies on a device that is unpleasant to
+reflash. Revisit if card size ever becomes the binding constraint.
+
+`persistent` cannot be measured from a build: it is empty until the device runs,
+and its growth is `audit.jsonl` between logrotate runs. 4G is still a judgement
+call, just a well-padded one.
+
 ## Known gaps
 
 - **`docs/usage.rst` never documents installing cloudflared.** Independent of
   this directory: the manual deployment path ships a unit for a binary the docs
   never tell you to install. Worth a paragraph pointing at the official `.deb`.
-- **Partition sizes are estimates.** 1G per system slot and 4G shared are
-  starting guesses, not measurements.

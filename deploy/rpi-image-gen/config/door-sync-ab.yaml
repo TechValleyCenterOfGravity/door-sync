@@ -29,12 +29,15 @@ image:
   name: door-sync-ab
 
   # Inherited: boot 128M / system 512M / data 1G.
-  # 512M does not fit python3 plus flask, httpx and waitress with headroom;
-  # this is per slot and there are two of them.
+  # Measured from the v0.2.0 build: a system slot holds ~266 MiB, so the
+  # inherited 512M would fit at ~52%. Kept at 1G for headroom -- a larger
+  # Python or another dependency should not require repartitioning a device
+  # that has to be physically reflashed. Costs 1 GiB of card, per slot, twice.
   system_part_size: 1G
 
   # Shared across slots. Sized for audit.jsonl growth between logrotate runs --
-  # the only thing here that accumulates.
+  # the only thing here that accumulates. Empty at build, so unlike the system
+  # slots this one cannot be measured from an image; it stays a judgement call.
   data_part_size: 4G
 
 layer:
