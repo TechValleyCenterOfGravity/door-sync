@@ -2,7 +2,7 @@
 
 CiviCRM → UniFi Access reconciliation daemon. Runs on a Raspberry Pi under systemd.
 
-**Status: in active development.** Pure modules, CiviCRM client, UniFi Access client, orchestrator + ops (audit JSONL, state JSON, alert with flag-file + SMTP/Mailgun transports), the scheduler daemon loop (SIGTERM/SIGINT handling), and the optional webhook receiver (HMAC-verified, loopback-bound, queue-driven) are merged. Architecture is locked; see `docs/architecture.md` before adding code.
+**Status: in active development.** Pure modules, CiviCRM client, UniFi Access client, orchestrator + ops (audit JSONL, state JSON, alert with flag-file + SMTP/Mailgun transports), the scheduler daemon loop (SIGTERM/SIGINT handling), and the optional webhook receiver (HMAC-verified, loopback-bound, queue-driven) are merged. So is the deployment half: the Debian package (`packaging/deb/`), the immutable A/B appliance image (`deploy/rpi-image-gen/`), and the release workflow that builds both. Architecture is locked; see `docs/architecture.md` before adding code.
 
 ## Commands
 
@@ -11,10 +11,12 @@ uv sync                                       # install
 uv run pytest                                 # tests
 uv run pyrefly check                          # type check
 uv run ruff check .                           # lint
+uv run ruff format --check .                  # format gate (CI runs --diff)
 uv run door-sync run --once                   # one reconcile cycle, exit
 uv run door-sync run --once --dry-run         # compute + log diff; no UniFi writes
 uv run door-sync show-diff                    # read-only: print computed diff
 uv run door-sync validate-config              # load config, print issues, exit
+packaging/deb/build-deb.sh --output dist      # build the .deb (not a uv tool)
 ```
 
 All tooling goes through `uv run` — the venv is managed by uv, not pip.
@@ -35,6 +37,7 @@ All tooling goes through `uv run` — the venv is managed by uv, not pip.
 - **No member names in logs/alerts.** Operational and audit log streams identify members by `contact_id` (and, for unmanaged UniFi accounts, user id) — never by name. CodeQL's `py/clear-text-logging-sensitive-data` flags `display_name` as PII. The interactive `show-diff` CLI may print names (direct operator output, not a log). See architecture/conventions.rst.
 - **Dry-run is sacred.** Dry-run flips a flag inside `UnifiClient` that turns writes into no-ops. Pure modules behave identically in dry-run and live — do not branch on dry-run in pure code.
 - **Fail-secure on safety guards.** Any guard firing means zero writes that cycle. No partial application.
+- **New config keys must have a default. Never make one required.** `/etc/door-sync/config.toml` is provisioned per device and no update mechanism touches it — the appliance image ships only an example, and config changes are made by hand over a Connect remote shell. So a newly required key means the service refuses to start after an OTA that was pushed remotely, recoverable only by shelling into the device. Add the key to the relevant `_DEFAULT_*` constant and validate it only when present.
 - **Crash logging uses `_logger.error("...", exc_info=exc)`, not `_logger.exception(...)`.** `exception()` reads `sys.exc_info()`, which is `(None, None, None)` outside an active `except` clause — the traceback would be silently dropped. Python 3.5+ accepts an exception instance directly via `exc_info=`. See `orchestrator.handle_crash` for the reference impl.
 
 ## Testing
@@ -54,7 +57,11 @@ Recurring true-positive: CodeQL `py/ineffectual-statement` flags `...` (Ellipsis
 
 ## Config
 
-Two-file split: secrets in env (`.env` dev, `/etc/door-sync/env` prod, mode 0400), everything else in TOML (`config.toml` dev, `/etc/door-sync/config.toml` prod). Schema is not yet implemented.
+Two-file split: secrets in env (`.env` dev, `/etc/door-sync/env` prod, mode 0400 **owned by the service account** — the daemon reads this file itself as `User=door-sync`, not only via systemd's `EnvironmentFile=`, so root-owned 0400 locks it out), everything else in TOML (`config.toml` dev, `/etc/door-sync/config.toml` prod). `DOOR_SYNC_CONFIG_DIR` selects the directory; the service sets it to `/etc/door-sync`.
+
+Validation is implemented. Each `[table]` has its own validator in `config.py`; they accumulate `ConfigIssue`s rather than raising on the first bad key, and `ConfigError` carries the whole list so `validate-config` can print every problem at once. Add validation alongside any new key — do not read raw TOML at the call site.
+
+**Env precedence is not the obvious one.** The env *file* wins whenever the key is present, **even if its value is empty**; `os.environ` is consulted only when the file lacks the key entirely (`config.py` `env_get`). So `CIVICRM_API_KEY=` means "empty, and invalid", not "fall back to the shell".
 
 # Python Project Rules
 

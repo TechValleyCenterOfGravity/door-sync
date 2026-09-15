@@ -1,6 +1,7 @@
 """Tests for door_sync.alert — flag-file and email transports."""
 
 import logging
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -278,3 +279,41 @@ def test_clear_with_none_alert_config_only_removes_flag(tmp_path: Path) -> None:
     path.write_text("reason\n")
     alert.clear(path=path, alert_config=None)
     assert not path.exists()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
+def test_raise_survives_unwritable_flag_path(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A halt must still halt when the flag cannot be written.
+
+    Reachable via a device-provisioned config pinning a path the unit can no
+    longer write. Escalating here would turn a controlled halt into a crash --
+    and raise from inside the crash handler, which also calls raise_().
+    """
+    blocked = tmp_path / "ro"
+    blocked.mkdir()
+    blocked.chmod(0o500)
+    try:
+        with caplog.at_level(logging.ERROR):
+            alert.raise_("mass_deactivate", path=blocked / "sub" / "alert.flag")
+    finally:
+        blocked.chmod(0o700)
+
+    assert "could not write alert flag" in caplog.text
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
+def test_clear_survives_unremovable_flag(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    holder = tmp_path / "ro"
+    holder.mkdir()
+    flag = holder / "alert.flag"
+    flag.write_text("stale\n")
+    holder.chmod(0o500)
+    try:
+        with caplog.at_level(logging.ERROR):
+            alert.clear(path=flag)
+    finally:
+        holder.chmod(0o700)
+
+    assert "could not clear alert flag" in caplog.text

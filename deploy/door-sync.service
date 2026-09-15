@@ -18,13 +18,6 @@ ExecStart=/usr/local/bin/door-sync run
 Restart=on-failure
 RestartSec=30s
 
-# /run is tmpfs, so /run/door-sync does not survive a reboot and nothing else
-# creates it. ReadWritePaths entries are NOT ignored when missing unless they
-# are prefixed with '-', so listing it there made namespace setup fail and the
-# unit refused to start at all. Let systemd own the directory instead: it is
-# created before the unit starts, owned by User=, and removed on stop.
-RuntimeDirectory=door-sync
-RuntimeDirectoryMode=0750
 StandardOutput=journal
 StandardError=journal
 
@@ -33,6 +26,12 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+# alert.flag lives in /var/lib/door-sync, not a RuntimeDirectory under /run.
+# /run is tmpfs, so a raised alert vanished on the next reboot -- including the
+# reboot an A/B slot flip performs, exactly when an operator most needs to see
+# that the last cycle halted. /var/lib/door-sync is slot-shared on the
+# appliance image and created by the package's postinst, so the flag is latched
+# until a successful cycle clears it.
 ReadWritePaths=/var/log/door-sync /var/lib/door-sync
 
 [Install]

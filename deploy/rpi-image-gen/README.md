@@ -16,6 +16,7 @@ sources; it has not been run. Lint it (`ig` metadata lint, per upstream's
 | `layer/door-sync.yaml` | The application layer: account, the door-sync `.deb`, slot-shared state |
 | `layer/cloudflared.yaml` | Cloudflare Tunnel daemon: pinned binary and service account only |
 | `config/door-sync-ab.yaml` | Image config: includes `trixie-minbase-ab`, overrides sizes, hostname, version |
+| `RUNBOOK.md` | Operating a flashed device: first boot, config changes, health, updates |
 
 ## door-sync is installed as a package
 
@@ -101,7 +102,8 @@ image-managed.
 Until `/etc/door-sync/env` exists, `door-sync.service` will restart-loop —
 `EnvironmentFile=` has no leading `-`, so a missing secrets file is a hard
 failure. That is the fail-secure behaviour you want, but it means a freshly
-flashed card is loudly broken until provisioned. Worth putting in the runbook.
+flashed card is loudly broken until provisioned. The provisioning procedure is
+in `RUNBOOK.md`.
 
 **UIDs are pinned (900/901), not allocated.** The persistent partition outlives
 any single image. If a later build allocated different system uids, the existing
@@ -207,21 +209,24 @@ Raspberry Pi Connect pushes it to the device, which writes the inactive slot and
 flips. `artefact.version` is what an operator sees when choosing whether to
 deploy or roll back, so keep it in step with the door-sync release it carries.
 
-Two things to weigh before adopting this:
+**Decided: adopted.** Two costs were weighed and accepted:
 
 - Raspberry Pi describes the remote update capability as **experimental**.
 - It puts a **vendor remote-management channel on a door controller**. That is
   the same objection raised against balena's control plane, and it applies here
   too. The difference is that the rest of the stack stays plain Debian and
   systemd, so the channel is removable without redesigning the deployment. If
-  the trade is unacceptable, drop the two `rpi-connect-*` layers: `image-rota`
-  still gives immutable A/B roots and rollback, and updates become
+  the trade later proves unacceptable, drop the two `rpi-connect-*` layers:
+  `image-rota` still gives immutable A/B roots and rollback, and updates become
   reflash-or-bring-your-own-transport.
 
-First-boot sign-in is either a per-device identity (Connect for Organisations,
-no credentials in the image) or an embedded single-use auth key passed at build
-time. Prefer the former — an auth key baked into an image is a secret living in
-an artefact you may later want to rebuild or hand to someone else.
+**Still open: first-boot sign-in.** Either a per-device identity (Connect for
+Organisations, no credentials in the image) or an embedded single-use auth key
+passed at build time. Prefer the former — an auth key baked into an image is a
+secret living in an artefact you may later want to rebuild or hand to someone
+else. With a single device, interactive `rpi-connect signin` at provisioning
+time is a third option worth checking: it needs console access once and puts no
+secret in the image at all.
 
 ## Building it in CI
 
@@ -267,10 +272,6 @@ when the thing being updated is a door controller.
 
 ## Known gaps
 
-- **`alert.flag` lives in `/run`** and is therefore cleared by any reboot, an OTA
-  included. That is pre-existing behaviour, not something this layer changes. If
-  a raised alert should survive a reboot, move it under `/var/lib/door-sync`
-  (already slot-shared) and update `[paths]`.
 - **`docs/usage.rst` never documents installing cloudflared.** Independent of
   this directory: the manual deployment path ships a unit for a binary the docs
   never tell you to install. Worth a paragraph pointing at the official `.deb`.

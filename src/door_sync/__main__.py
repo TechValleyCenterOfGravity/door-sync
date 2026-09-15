@@ -5,7 +5,8 @@ Subcommands:
                            (daemon mode; cadence from config.cadence_seconds).
   run --once [--dry-run]   Execute one reconcile cycle and exit.
   show-diff                Read-only: fetch + compute diff, pretty-print, exit.
-  validate-config          Load config, print issues, exit 0 (ok) or 1 (bad).
+  validate-config          Load config, check the env file's mode, print issues,
+                           exit 0 (ok) or 1 (bad).
 
 Exit codes:
   0  success (one-shot success; daemon clean shutdown)
@@ -190,12 +191,20 @@ def cmd_validate_config(args: argparse.Namespace) -> int:
         args: Parsed CLI namespace with config/env path overrides.
 
     Returns:
-        Exit code: 0 valid, 1 invalid.
+        Exit code: 0 valid, 1 invalid or the env file is not owner-only.
     """
     try:
         config_mod.load(config_path=args.config, env_path=args.env_file)
     except config_mod.ConfigError as e:
         cli.print_config_issues(e.issues, file=sys.stderr)
+        return 1
+
+    # Valid but insecure still fails the check: the env file is provisioned by
+    # hand, so a permissive mode is the likeliest way for the API keys to leak,
+    # and nothing else would report it.
+    warnings = config_mod.check_env_permissions(args.env_file)
+    if warnings:
+        cli.print_config_issues(warnings, file=sys.stderr)
         return 1
     return 0
 
