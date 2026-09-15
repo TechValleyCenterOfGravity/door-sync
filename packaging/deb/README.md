@@ -10,9 +10,13 @@ packaging/deb/build-deb.sh --version 0.2.0      # must match pyproject
 
 Requires `dpkg-deb`, `python3` and `uv`, so it runs on a Debian-ish host or in
 CI — not on macOS. `.github/workflows/release.yml` builds it on every published
-release, attaches the `.deb` to the release, and also builds (without uploading)
-on pull requests that touch packaging. The same workflow's image job then
-installs that exact package into the appliance image.
+release and attaches the `.deb` to the release. The same workflow's image job
+then installs that exact package into the appliance image.
+
+It does **not** run on pull requests. To exercise a packaging change before
+merging, dispatch the workflow against the branch (Actions -> Release -> Run
+workflow): that builds and verifies the package without uploading anything,
+because the publish job is gated on a release event.
 
 ## Why a package rather than a venv
 
@@ -62,8 +66,9 @@ The maintainer scripts use `addgroup`/`adduser`/`deluser`, so the package
 depends on `adduser`. It is Priority: important, so most Debian systems already
 have it — but minimal images do not, including the `debian:trixie-slim` that CI
 verifies against, where `postinst` fails with `addgroup: not found`. Caught by
-the PR build rather than at release time, which is the argument for that trigger
-in one line.
+CI's install test rather than at release time -- which is the argument for
+running that test at all, and for dispatching this workflow manually when you
+touch the dependency list.
 
 ## Deliberate choices
 

@@ -9,19 +9,16 @@ name: Release
 # package the deb job built rather than rebuilding it, so a release ships the
 # byte-identical artefact that was verified.
 #
-# Also runs on pull requests that touch packaging or the image definition. That
-# is deliberately expensive: an image build is the only thing that catches a
-# broken layer, and every defect found in this stack so far was found that way.
+# Does not run on pull requests. An image build takes minutes on a scarce arm64
+# runner, and the paths filter caught edits to documentation living beside the
+# image definition as readily as edits to the definition itself. To validate a
+# packaging or image change before merging, run the workflow manually against
+# the branch (Actions -> Release -> Run workflow); that builds the package and
+# the image, and skips the publish job, which is gated on a release event.
 
 on:
   release:
     types: [published]
-  pull_request:
-    paths:
-      - 'packaging/**'
-      - 'deploy/rpi-image-gen/**'
-      - 'pyproject.toml'
-      - '.github/workflows/release.yml'
   workflow_dispatch:
     inputs:
       rpi_image_gen_ref:
@@ -43,8 +40,8 @@ jobs:
     name: Debian package
     runs-on: ubuntu-latest
     # Read-only on purpose. This job executes repository code (build-deb.sh),
-    # which on a pull_request is the PR's version of it. Uploading to the
-    # release happens in the publish job, which runs no repo code at all.
+    # which on a manual dispatch is whatever branch was selected. Uploading to
+    # the release happens in the publish job, which runs no repo code at all.
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -264,7 +261,8 @@ jobs:
 
   # The only job with write access, and it runs no repository code: it
   # downloads the artefacts the build jobs produced and uploads them. Keeping
-  # the write-scoped token away from anything a pull request can edit.
+  # the write-scoped token away from any code the repository can influence --
+  # a manually dispatched branch included.
   publish:
     name: Attach to release
     needs: [deb, image]

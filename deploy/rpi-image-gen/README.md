@@ -228,9 +228,16 @@ an artefact you may later want to rebuild or hand to someone else.
 `.github/workflows/release.yml` builds the image and OTA bundle on
 `ubuntu-24.04-arm`, which is what upstream uses for its own images — native
 arm64, no container, no QEMU (which upstream does not formally support). It runs
-on published releases, on demand, and on pull requests that touch the image
-definition, because a build that takes tens of minutes does not belong on every
-push.
+on published releases and on manual dispatch, and deliberately **not** on pull
+requests: the build takes minutes on a scarce arm64 runner, and a paths filter
+fired on documentation living beside the image definition as readily as on the
+definition itself.
+
+To validate a packaging or image change before merging, dispatch the workflow
+against the branch (Actions -> Release -> Run workflow). That builds the package
+and the image and skips the publish job, which is gated on a release event. The
+trade is that nothing forces that check — an image change can merge unbuilt, so
+run it when the change is more than cosmetic.
 
 The image job takes the `.deb` from the package job in the same workflow rather
 than rebuilding it, so a release ships the byte-identical artefact that was
