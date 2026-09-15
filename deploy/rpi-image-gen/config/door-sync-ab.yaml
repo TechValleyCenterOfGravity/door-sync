@@ -17,6 +17,8 @@ device:
   # either a per-site build or a first-boot hostname step.
   hostname: door-sync-1
   # Inherited config targets rpi5; override to match the actual hardware.
+  # Must be rpi4 or rpi5: A/B boot updates require a Pi 4 or later, so a Pi 3
+  # is not a valid target for this config however this layer is set.
   layer: rpi4
 
 artefact:
