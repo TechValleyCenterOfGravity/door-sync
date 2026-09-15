@@ -66,7 +66,7 @@ Validation is implemented. Each `[table]` has its own validator in `config.py`; 
 # Python Project Rules
 
 <!-- Generated from pydevtools.com, the Python Developer Tooling Handbook -->
-<!-- Last verified against: uv 0.11.15, ruff 0.15.13, pyrefly 1.0.0, ty 0.0.38, pytest 9.0.3 -->
+<!-- Last verified against: uv 0.12.13, ruff 0.16.7, pyrefly 1.3.0, pytest 9.1.1 -- the versions this project actually runs. ty (0.0.81) is listed as an alternative above but is not used here, so its guidance is unexercised. -->
 <!-- Full explanations: https://pydevtools.com/handbook/explanation/modern-python-project-setup-guide-for-ai-assistants/ -->
 
 When working with Python, invoke the relevant /astral:<skill> for uv, and ruff to ensure best practices are followed.

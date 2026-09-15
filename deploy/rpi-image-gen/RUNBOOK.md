@@ -19,17 +19,36 @@ That is fail-secure and expected. It is not a broken image.
 
 ## First boot
 
-Step 1 needs a console — a keyboard and monitor on the device, or whatever
-access method the sign-in method you choose requires. There is no remote shell
-before sign-in. Steps 2 onward can all be done over the Connect remote shell,
+Step 1 needs a console on the device — a keyboard and monitor, or a serial
+console. There is no remote shell before sign-in, because sign-in is what
+creates it. Steps 2 onward can all be done over the Connect remote shell,
 because Connect sign-in is independent of door-sync's config: the device is
 reachable while door-sync is still restart-looping.
 
 Screen sharing is *not* available: it requires Wayland and does not work on
 Raspberry Pi OS Lite, which this image is built from.
 
-1. **Sign the device in to Connect.** How this is done is still an open
-   decision — see "Updates: Raspberry Pi Connect" in `README.md`.
+1. **Sign the device in to Connect.** From the console:
+
+   ```sh
+   sudo rpi-connect on
+   rpi-connect signin
+   ```
+
+   `signin` prints a verification URL of the form
+   `https://connect.raspberrypi.com/verify/XXXX-XXXX`. Open it on any device,
+   sign in with your Raspberry Pi ID, and the link completes — nothing has to
+   run a browser on the Pi, which is what makes this work on Lite. Confirm with
+   `rpi-connect status`.
+
+   Then opt the device in to remote updates, which is a separate switch:
+
+   ```sh
+   rpi-connect ota on
+   ```
+
+   Connect signs communication with the device's serial number, so moving this
+   card to a different Pi signs it out and you repeat this step.
 
 2. **Write the config.** Start from the shipped example rather than from
    memory; it documents every key and its default:
