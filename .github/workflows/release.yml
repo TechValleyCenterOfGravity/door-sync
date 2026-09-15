@@ -261,7 +261,8 @@ jobs:
 
   # The only job with write access, and it runs no repository code: it
   # downloads the artefacts the build jobs produced and uploads them. Keeping
-  # the write-scoped token away from anything a pull request can edit.
+  # the write-scoped token away from any code the repository can influence --
+  # a manually dispatched branch included.
   publish:
     name: Attach to release
     needs: [deb, image]
