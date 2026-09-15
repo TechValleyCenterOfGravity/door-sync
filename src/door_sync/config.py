@@ -10,6 +10,7 @@ Errors surface as ConfigError so callers can format and exit on their own terms.
 import ipaddress
 import os
 import re
+import stat
 import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -296,6 +297,44 @@ def _resolve_paths(config_path: Path | None, env_path: Path | None) -> tuple[Pat
     if env_path is None:
         env_path = Path(config_dir) / "env" if config_dir else Path(".env")
     return config_path, env_path
+
+
+def check_env_permissions(env_path: Path | None = None) -> list[ConfigIssue]:
+    """Report the env file's mode when it is readable beyond its owner.
+
+    The env file holds the CiviCRM and UniFi API keys and the webhook HMAC
+    secret. On the appliance it is provisioned by hand over a remote shell, so
+    it gets whatever the creating umask produced -- usually 0644 -- and nothing
+    else in the system would ever mention that the keys are world-readable.
+
+    Deliberately not part of `load()`. A permissive mode on a device that is
+    already running must not stop the daemon from starting; it is reported when
+    an operator asks, via `validate-config`.
+
+    Args:
+        env_path: Path to the env file. Defaults to the same location `load()`
+            would use.
+
+    Returns:
+        One issue if the file is group- or world-accessible, otherwise empty.
+    """
+    _, env_path = _resolve_paths(None, env_path)
+    try:
+        mode = stat.S_IMODE(env_path.stat().st_mode)
+    except OSError:
+        # Missing or unreadable: load() already reports that, with better context.
+        return []
+    if not mode & 0o077:
+        return []
+    return [
+        ConfigIssue(
+            path="env_file",
+            message=(
+                f"{env_path} is mode {mode:04o} and holds secrets; "
+                f"it should be owner-only (chmod 0400 {env_path})"
+            ),
+        )
+    ]
 
 
 def load(
@@ -727,7 +766,7 @@ def _validate_safety(data: dict[str, Any], issues: list[ConfigIssue]) -> SafetyT
 _DEFAULT_OPS_PATHS = OpsPaths(
     audit_jsonl=Path("/var/log/door-sync/audit.jsonl"),
     state_json=Path("/var/lib/door-sync/state.json"),
-    alert_flag=Path("/var/run/door-sync/alert.flag"),
+    alert_flag=Path("/var/lib/door-sync/alert.flag"),
 )
 
 

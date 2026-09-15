@@ -706,7 +706,7 @@ def test_example_files_parse(monkeypatch: pytest.MonkeyPatch) -> None:
     # ops_paths — all three fields from the example file
     assert result.ops_paths.audit_jsonl == Path("/var/log/door-sync/audit.jsonl")
     assert result.ops_paths.state_json == Path("/var/lib/door-sync/state.json")
-    assert result.ops_paths.alert_flag == Path("/var/run/door-sync/alert.flag")
+    assert result.ops_paths.alert_flag == Path("/var/lib/door-sync/alert.flag")
     # alert — commented out in example, defaults to flag-file
     assert result.alert.transport == "flag-file"
     assert result.alert.smtp is None
@@ -781,7 +781,7 @@ def test_ops_paths_default_when_section_omitted(tmp_path: Path) -> None:
 
     assert config.ops_paths.audit_jsonl == Path("/var/log/door-sync/audit.jsonl")
     assert config.ops_paths.state_json == Path("/var/lib/door-sync/state.json")
-    assert config.ops_paths.alert_flag == Path("/var/run/door-sync/alert.flag")
+    assert config.ops_paths.alert_flag == Path("/var/lib/door-sync/alert.flag")
 
 
 def test_ops_paths_explicit_values_override_defaults(tmp_path: Path) -> None:
@@ -1300,3 +1300,35 @@ def test_webhook_degenerate_skew_and_debounce_rejected() -> None:
     assert any(i.path == "webhook.debounce_seconds" for i in issues)
     assert cfg.max_skew_seconds == 300
     assert cfg.debounce_seconds == 2.0
+
+
+def test_env_permissions_owner_only_is_clean(tmp_path: Path) -> None:
+    env = tmp_path / "env"
+    env.write_text("CIVICRM_API_KEY=x\n")
+    env.chmod(0o400)
+    assert config.check_env_permissions(env) == []
+
+
+def test_env_permissions_owner_rw_is_clean(tmp_path: Path) -> None:
+    """0600 is not the documented 0400, but it leaks nothing."""
+    env = tmp_path / "env"
+    env.write_text("CIVICRM_API_KEY=x\n")
+    env.chmod(0o600)
+    assert config.check_env_permissions(env) == []
+
+
+@pytest.mark.parametrize("mode", [0o644, 0o640, 0o604, 0o444])
+def test_env_permissions_flags_group_or_world_access(tmp_path: Path, mode: int) -> None:
+    """0644 is what a hand-provisioned file gets under the usual umask."""
+    env = tmp_path / "env"
+    env.write_text("CIVICRM_API_KEY=x\n")
+    env.chmod(mode)
+    issues = config.check_env_permissions(env)
+    assert len(issues) == 1
+    assert issues[0].path == "env_file"
+    assert f"{mode:04o}" in issues[0].message
+
+
+def test_env_permissions_missing_file_is_silent(tmp_path: Path) -> None:
+    """load() reports an absent env file with better context; don't double up."""
+    assert config.check_env_permissions(tmp_path / "nope") == []

@@ -40,8 +40,8 @@ Dry-run is safe to point at production data.
 2. Create the service user: `sudo useradd --system --no-create-home door-sync`.
 3. Create the config and ops directories:
    ```bash
-   sudo mkdir -p /etc/door-sync /var/log/door-sync /var/lib/door-sync /var/run/door-sync
-   sudo chown -R door-sync:door-sync /var/log/door-sync /var/lib/door-sync /var/run/door-sync
+   sudo mkdir -p /etc/door-sync /var/log/door-sync /var/lib/door-sync
+   sudo chown -R door-sync:door-sync /var/log/door-sync /var/lib/door-sync
    ```
 4. Drop `config.toml` into `/etc/door-sync/` (mode 0644) and `env` into the same dir (mode 0400).
 5. Install the unit: `sudo cp deploy/door-sync.service /etc/systemd/system/`.

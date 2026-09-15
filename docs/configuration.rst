@@ -269,7 +269,7 @@ Each rule has three fields:
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 These paths control where the daemon writes its audit log, persistent state,
-and alert flag file. All three directories must exist and be writable by the
+and alert flag file. Both directories must exist and be writable by the
 service account.
 
 .. code-block:: toml
@@ -285,8 +285,11 @@ service account.
 
    # Alert flag file. Presence indicates an active alert condition.
    # External monitoring (Nagios, Prometheus) can check for this file.
-   # Default: /var/run/door-sync/alert.flag
-   alert_flag = "/var/run/door-sync/alert.flag"
+   # Kept alongside state rather than under /run, so a raised alert survives a
+   # reboot -- including the one an A/B slot flip performs -- and is cleared
+   # only by a successful cycle.
+   # Default: /var/lib/door-sync/alert.flag
+   alert_flag = "/var/lib/door-sync/alert.flag"
 
 For development, you may want to override these to local paths:
 
@@ -439,7 +442,7 @@ Putting it all together, here is a minimal production ``config.toml``:
    [ops]
    audit_jsonl = "/var/log/door-sync/audit.jsonl"
    state_json = "/var/lib/door-sync/state.json"
-   alert_flag = "/var/run/door-sync/alert.flag"
+   alert_flag = "/var/lib/door-sync/alert.flag"
 
    [alert]
    transport = "flag-file"

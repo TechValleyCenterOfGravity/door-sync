@@ -122,8 +122,7 @@ directories and grant ownership:
 
    sudo mkdir -p /var/log/door-sync
    sudo mkdir -p /var/lib/door-sync
-   sudo mkdir -p /var/run/door-sync
-   sudo chown door-sync:door-sync /var/log/door-sync /var/lib/door-sync /var/run/door-sync
+   sudo chown door-sync:door-sync /var/log/door-sync /var/lib/door-sync
 
 These paths are configurable in ``config.toml`` under ``[ops]``.
 

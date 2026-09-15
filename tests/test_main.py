@@ -71,6 +71,12 @@ def _build_config(tmp_path: Path, *, webhook_enabled: bool = False) -> Config:
 
 def _patch_config_load(monkeypatch: pytest.MonkeyPatch, cfg: Config) -> None:
     monkeypatch.setattr(main_mod.config_mod, "load", lambda **_: cfg)
+    # validate-config also stats the env file for its mode. With load() stubbed
+    # there is no real env file to stat, and the resolver would fall back to the
+    # developer's own ./.env -- so these CLI tests would depend on the mode of a
+    # file outside the repo's control. Permission behaviour is covered directly
+    # in test_config.py, and by test_validate_config_flags_permissive_env below.
+    monkeypatch.setattr(main_mod.config_mod, "check_env_permissions", lambda _p=None: [])
 
 
 def test_run_once_success_exits_zero(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -187,6 +193,24 @@ def test_validate_config_good_exits_zero(tmp_path: Path, monkeypatch: pytest.Mon
 
     rc = main_mod.main(argv=["validate-config"])
     assert rc == 0
+
+
+def test_validate_config_flags_permissive_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A valid config with world-readable secrets still fails the check."""
+    monkeypatch.setattr(main_mod.config_mod, "load", lambda **_: _build_config(tmp_path))
+    env = tmp_path / "env"
+    env.write_text("CIVICRM_API_KEY=x\n")
+    env.chmod(0o644)
+
+    # --env-file is a global option: it precedes the subcommand.
+    rc = main_mod.main(argv=["--env-file", str(env), "validate-config"])
+
+    assert rc == 1
+    assert "0644" in capsys.readouterr().err
 
 
 def test_show_diff_prints_sections_and_exits_zero(

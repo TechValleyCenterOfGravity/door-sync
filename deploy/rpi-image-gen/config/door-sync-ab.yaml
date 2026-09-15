@@ -12,7 +12,9 @@ include:
   file: trixie-minbase-ab.yaml
 
 device:
-  # Sets the device name in Raspberry Pi Connect. Change per door/site.
+  # Sets the device name in Raspberry Pi Connect. The deployment is a single
+  # device, so this is baked rather than provisioned; a second door would need
+  # either a per-site build or a first-boot hostname step.
   hostname: door-sync-1
   # Inherited config targets rpi5; override to match the actual hardware.
   layer: rpi4
