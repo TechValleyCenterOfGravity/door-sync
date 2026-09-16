@@ -5,7 +5,7 @@ packages**, not a bundled virtualenv.
 
 ```sh
 packaging/deb/build-deb.sh                      # version from pyproject.toml
-packaging/deb/build-deb.sh --version 0.3.0      # must match pyproject
+packaging/deb/build-deb.sh --version 0.3.1      # must match pyproject
 ```
 
 Requires `dpkg-deb`, `python3` and `uv`, so it runs on a Debian-ish host or in

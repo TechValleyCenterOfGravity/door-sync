@@ -83,7 +83,7 @@ Install from a release asset. The package is ``Architecture: all``, so one
 
 .. code-block:: bash
 
-   VERSION=0.3.0
+   VERSION=0.3.1
    curl -fsSLO "https://github.com/TechValleyCenterOfGravity/door-sync/releases/download/v${VERSION}/door-sync_${VERSION}_all.deb"
    sudo apt install "./door-sync_${VERSION}_all.deb"
 

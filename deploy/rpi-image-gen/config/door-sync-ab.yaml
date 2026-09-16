@@ -3,7 +3,7 @@
 # Build (arm64 Debian host -- see README):
 #   packaging/deb/build-deb.sh --output dist      # or fetch a release asset
 #   rpi-image-gen build -S ./deploy/rpi-image-gen/ -c door-sync-ab.yaml -- \
-#     IGconf_doorsync_deb=$PWD/dist/door-sync_0.3.0_all.deb
+#     IGconf_doorsync_deb=$PWD/dist/door-sync_0.3.1_all.deb
 #
 # Produces door-sync-ab.update.tar.zst in the deploy dir alongside the disk
 # image -- that bundle is what Raspberry Pi Connect pushes to the device.
@@ -25,7 +25,7 @@ artefact:
   # Bump for every image you cut. This is the version an operator sees when
   # deciding whether to deploy or roll back, so keep it in step with the
   # door-sync release it carries.
-  version: 0.3.0
+  version: 0.3.1
 
 image:
   name: door-sync-ab
