@@ -317,3 +317,96 @@ def test_clear_survives_unremovable_flag(tmp_path: Path, caplog: pytest.LogCaptu
         holder.chmod(0o700)
 
     assert "could not clear alert flag" in caplog.text
+
+
+# --- RESOLVED is edge-triggered on the flag, not sent every cycle ---
+
+
+def test_clear_without_active_flag_sends_no_email(tmp_path: Path) -> None:
+    """A healthy cycle must stay silent.
+
+    clear() runs after every successful reconcile, so dispatching RESOLVED
+    unconditionally mails the operator once per cycle forever.
+    """
+    path = tmp_path / "alert.flag"
+    cfg = AlertConfig(transport="mailgun", smtp=None, mailgun=_mailgun_config())
+
+    with patch("door_sync.alert.httpx.post") as mock_post:
+        alert.clear(path=path, alert_config=cfg)
+
+    mock_post.assert_not_called()
+    assert not path.exists()
+
+
+def test_clear_sends_resolved_once_then_stays_silent(tmp_path: Path) -> None:
+    path = tmp_path / "alert.flag"
+    cfg = AlertConfig(transport="mailgun", smtp=None, mailgun=_mailgun_config())
+
+    with patch("door_sync.alert.httpx.post") as mock_post:
+        alert.raise_("safety halt", path=path, alert_config=cfg)
+        alert.clear(path=path, alert_config=cfg)
+        alert.clear(path=path, alert_config=cfg)
+        alert.clear(path=path, alert_config=cfg)
+
+    subjects = [c.kwargs["data"]["subject"] for c in mock_post.call_args_list]
+    assert subjects == ["[door-sync] ALERT", "[door-sync] RESOLVED"]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
+def test_clear_sends_no_resolved_when_flag_cannot_be_removed(tmp_path: Path) -> None:
+    """A stuck flag is not a transition, so it must not mail on every cycle."""
+    holder = tmp_path / "ro"
+    holder.mkdir()
+    flag = holder / "alert.flag"
+    flag.write_text("stale\n")
+    cfg = AlertConfig(transport="mailgun", smtp=None, mailgun=_mailgun_config())
+    holder.chmod(0o500)
+    try:
+        with patch("door_sync.alert.httpx.post") as mock_post:
+            alert.clear(path=flag, alert_config=cfg)
+    finally:
+        holder.chmod(0o700)
+
+    mock_post.assert_not_called()
+
+
+# --- ALERT is per-failure, not per-episode ---
+
+
+def test_raise_mails_every_failing_cycle(tmp_path: Path) -> None:
+    """Consecutive failures each mail: a repeat halt is a sync still not happening."""
+    path = tmp_path / "alert.flag"
+    cfg = AlertConfig(transport="mailgun", smtp=None, mailgun=_mailgun_config())
+
+    with patch("door_sync.alert.httpx.post") as mock_post:
+        alert.raise_("mass deactivation: 12 of 30 active users", path=path, alert_config=cfg)
+        alert.raise_("mass deactivation: 12 of 30 active users", path=path, alert_config=cfg)
+        alert.raise_(
+            "crashed: ConnectionError: controller unreachable", path=path, alert_config=cfg
+        )
+
+    assert mock_post.call_count == 3
+    bodies = [c.kwargs["data"]["text"] for c in mock_post.call_args_list]
+    assert bodies[1] == "mass deactivation: 12 of 30 active users"
+    assert bodies[2] == "crashed: ConnectionError: controller unreachable"
+    # The flag tracks the most recent reason.
+    assert path.read_text(encoding="utf-8") == "crashed: ConnectionError: controller unreachable\n"
+
+
+def test_repeated_failures_then_recovery_sends_one_resolved(tmp_path: Path) -> None:
+    path = tmp_path / "alert.flag"
+    cfg = AlertConfig(transport="mailgun", smtp=None, mailgun=_mailgun_config())
+
+    with patch("door_sync.alert.httpx.post") as mock_post:
+        alert.raise_("safety halt", path=path, alert_config=cfg)
+        alert.raise_("safety halt", path=path, alert_config=cfg)
+        alert.clear(path=path, alert_config=cfg)
+        alert.clear(path=path, alert_config=cfg)
+        alert.clear(path=path, alert_config=cfg)
+
+    subjects = [c.kwargs["data"]["subject"] for c in mock_post.call_args_list]
+    assert subjects == [
+        "[door-sync] ALERT",
+        "[door-sync] ALERT",
+        "[door-sync] RESOLVED",
+    ]
