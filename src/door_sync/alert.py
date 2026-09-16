@@ -5,6 +5,11 @@ transports (SMTP or Mailgun HTTP API). The flag file is always written
 regardless of transport — external monitoring (Nagios, Prometheus
 textfile collector, etc.) can detect halts without parsing logs.
 
+Every failing cycle sends an ALERT, including consecutive failures on the same
+condition. RESOLVED is edge-triggered on the flag: it goes out once, on the
+cycle that clears an alert that was actually active, so a healthy daemon does
+not mail after every sync.
+
 Email failures are logged at ERROR but never crash a reconcile cycle.
 """
 
@@ -36,6 +41,11 @@ def raise_(
 ) -> None:
     """Write flag file and, if configured, send an alert email.
 
+    Every failing cycle mails, including consecutive failures on the same
+    condition. A halt that repeats is a sync that is still not happening, and
+    each one is worth surfacing -- only RESOLVED is edge-triggered, so that a
+    healthy daemon stays silent (see `clear()`).
+
     Args:
         reason: Human-readable description of the alert condition.
         path: Path to the alert flag file.
@@ -52,18 +62,39 @@ def clear(
     path: Path,
     alert_config: AlertConfig | None = None,
 ) -> None:
-    """Remove flag file and, if configured, send a resolved email.
+    """Remove flag file and, if an alert was active, send a resolved email.
+
+    RESOLVED is edge-triggered on the flag file: it goes out only on the cycle
+    that actually removes a flag, so a healthy daemon does not mail the
+    operator once per reconcile. A cycle that finds no flag has nothing to
+    resolve and says nothing.
+
+    If the flag could not be written when the alert was raised, no RESOLVED
+    follows that alert -- the unwritable path is already on the logger.
+
+    A RESOLVED that fails to send is not retried. The flag is already gone by
+    then, and that -- not the email -- is what external monitoring reads, so
+    the recovery is not actually lost. Re-raising the flag to force a retry
+    would tell monitoring the system is still halted, which is worse than a
+    missed courtesy email. The send failure is logged at ERROR with the
+    subject, so a dropped notification is traceable.
 
     Args:
         path: Path to the alert flag file.
         alert_config: Email transport settings, or None for flag-file only.
     """
     try:
-        path.unlink(missing_ok=True)
+        path.unlink()
+    except FileNotFoundError:
+        # No alert was active. Nothing to clear, nobody to notify.
+        return
     except OSError as exc:
         # A flag that cannot be cleared errs toward alarming, which is the safe
-        # direction, but the operator needs to know why it is stuck.
+        # direction, but the operator needs to know why it is stuck. No RESOLVED
+        # either: the flag is still there, so this was not a transition, and a
+        # stuck flag would otherwise mail on every subsequent cycle.
         _logger.error("could not clear alert flag %s: %s", path, exc)
+        return
     if alert_config is not None:
         _dispatch(alert_config, subject="RESOLVED", body="Previous alert cleared.")
 
@@ -117,7 +148,7 @@ def _send_smtp(cfg: SmtpConfig, *, subject: str, body: str) -> None:
             server.send_message(msg)
         _logger.info("alert email sent via SMTP: %s", subject)
     except Exception as exc:
-        _logger.error("failed to send alert email via SMTP", exc_info=exc)
+        _logger.error("failed to send alert email via SMTP: %s", subject, exc_info=exc)
 
 
 def _send_mailgun(cfg: MailgunConfig, *, subject: str, body: str) -> None:
@@ -138,4 +169,4 @@ def _send_mailgun(cfg: MailgunConfig, *, subject: str, body: str) -> None:
         resp.raise_for_status()
         _logger.info("alert email sent via Mailgun: %s", subject)
     except Exception as exc:
-        _logger.error("failed to send alert email via Mailgun", exc_info=exc)
+        _logger.error("failed to send alert email via Mailgun: %s", subject, exc_info=exc)

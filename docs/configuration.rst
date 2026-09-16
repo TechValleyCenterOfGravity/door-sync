@@ -311,7 +311,11 @@ dispatched. The flag file (``ops.alert_flag``) is **always** written
 regardless of the transport setting — it serves as a simple signal for
 external monitoring tools.
 
-Optionally, an email alert can be sent via SMTP or Mailgun.
+Optionally, an email alert can be sent via SMTP or Mailgun. Every failing
+cycle sends an ``ALERT``, including consecutive failures on the same
+condition — a halt that repeats is a sync that is still not happening.
+``RESOLVED`` is sent once, on the cycle that clears an alert that was actually
+active, so a healthy daemon does not mail after every sync.
 
 Flag-file only (default)
 """"""""""""""""""""""""
