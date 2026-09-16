@@ -410,3 +410,27 @@ def test_repeated_failures_then_recovery_sends_one_resolved(tmp_path: Path) -> N
         "[door-sync] ALERT",
         "[door-sync] RESOLVED",
     ]
+
+
+def test_failed_resolved_dispatch_names_the_lost_notification(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A RESOLVED that cannot be delivered is not retried, so the log must name it.
+
+    The flag is already gone, so external monitoring sees the recovery either
+    way -- but the operator waiting on the all-clear email needs to be able to
+    tell from the log which notification was dropped.
+    """
+    path = tmp_path / "alert.flag"
+    path.write_text("reason\n", encoding="utf-8")
+    cfg = AlertConfig(transport="mailgun", smtp=None, mailgun=_mailgun_config())
+
+    with (
+        patch("door_sync.alert.httpx.post", side_effect=ConnectionError("refused")),
+        caplog.at_level(logging.ERROR, logger="door_sync.alert"),
+    ):
+        alert.clear(path=path, alert_config=cfg)
+
+    assert not path.exists()
+    assert any("RESOLVED" in r.getMessage() for r in caplog.records)

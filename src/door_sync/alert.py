@@ -72,6 +72,13 @@ def clear(
     If the flag could not be written when the alert was raised, no RESOLVED
     follows that alert -- the unwritable path is already on the logger.
 
+    A RESOLVED that fails to send is not retried. The flag is already gone by
+    then, and that -- not the email -- is what external monitoring reads, so
+    the recovery is not actually lost. Re-raising the flag to force a retry
+    would tell monitoring the system is still halted, which is worse than a
+    missed courtesy email. The send failure is logged at ERROR with the
+    subject, so a dropped notification is traceable.
+
     Args:
         path: Path to the alert flag file.
         alert_config: Email transport settings, or None for flag-file only.
@@ -141,7 +148,7 @@ def _send_smtp(cfg: SmtpConfig, *, subject: str, body: str) -> None:
             server.send_message(msg)
         _logger.info("alert email sent via SMTP: %s", subject)
     except Exception as exc:
-        _logger.error("failed to send alert email via SMTP", exc_info=exc)
+        _logger.error("failed to send alert email via SMTP: %s", subject, exc_info=exc)
 
 
 def _send_mailgun(cfg: MailgunConfig, *, subject: str, body: str) -> None:
@@ -162,4 +169,4 @@ def _send_mailgun(cfg: MailgunConfig, *, subject: str, body: str) -> None:
         resp.raise_for_status()
         _logger.info("alert email sent via Mailgun: %s", subject)
     except Exception as exc:
-        _logger.error("failed to send alert email via Mailgun", exc_info=exc)
+        _logger.error("failed to send alert email via Mailgun: %s", subject, exc_info=exc)
